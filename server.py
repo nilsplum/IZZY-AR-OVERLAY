@@ -1,10 +1,10 @@
-# server.py
 import http.server
 import socketserver
 from http import HTTPStatus
+import os
 
-PORT = 8000
-DIRECTORY = "."
+PORT = 8080
+DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 class CORSRequestHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
@@ -17,6 +17,12 @@ class CORSRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(HTTPStatus.NO_CONTENT)
         self.end_headers()
 
+    def translate_path(self, path):
+        # Override to serve files from the specified DIRECTORY
+        path = http.server.SimpleHTTPRequestHandler.translate_path(self, path)
+        relpath = os.path.relpath(path, os.getcwd())
+        full_path = os.path.join(DIRECTORY, relpath)
+        return full_path
 
 with socketserver.TCPServer(("", PORT), CORSRequestHandler) as httpd:
     print(f"Serving at port {PORT}")

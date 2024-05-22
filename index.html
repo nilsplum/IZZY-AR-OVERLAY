@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>OpenCV Image Recognition</title>
-    <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+    <script async src="opencv.js" type="text/javascript"></script>
     <style>
         #outputCanvas {
             border: 10px solid black;
@@ -52,7 +52,7 @@
                     console.log("Reference Image Loaded");
                     await this.loadOverlayImage(this.overlayImageUrl);
                     console.log("Overlay Image Loaded");
-                    this.startProcessing(30);  // Start processing at 30 FPS
+                    this.startProcessing(60);  // Start processing at 30 FPS
                     console.log("Started Processing");
                 } catch (err) {
                     console.error("Initialization error: ", err);
@@ -80,7 +80,7 @@
 
             async setupCVDependentProperties() {
                 if (this.isOpenCVInitialized) {
-                    this.orbDetector = new cv.AKAZE();
+                    this.featureDetector = new cv.AKAZE();
                     this.matcher = new cv.BFMatcher();
                 } else {
                     console.error("Attempted to setup CV properties before OpenCV was initialized.");
@@ -115,7 +115,9 @@
                         this.referenceMat = tempMat;
                         this.referenceKeypoints = new cv.KeyPointVector();
                         this.referenceDescriptors = new cv.Mat();
-                        this.orbDetector.detectAndCompute(tempMat, new cv.Mat(), this.referenceKeypoints, this.referenceDescriptors);
+                        cv.imshow('outputCanvas', this.referenceMat);
+
+                        this.featureDetector.detectAndCompute(tempMat, new cv.Mat(), this.referenceKeypoints, this.referenceDescriptors);
                         if (this.referenceDescriptors.empty()) {
                             console.warn("Reference descriptors are empty after initialization");
                         }
@@ -146,7 +148,7 @@
                 });
             }
 
-            startProcessing(fps = 30) {
+            startProcessing(fps) {
                 setInterval(() => {
                     this.captureAndProcessFrame();
                 }, 1000 / fps);
@@ -198,14 +200,13 @@
                     return;
                 }
                 try {
-                    this.orbDetector.detectAndCompute(frameData.grayMat, new cv.Mat(), frameData.keypoints, frameData.descriptors);
+                    this.featureDetector.detectAndCompute(frameData.grayMat, new cv.Mat(), frameData.keypoints, frameData.descriptors);
                     if (!this.referenceDescriptors.empty() && !frameData.descriptors.empty()) {                    
                         let matches = new cv.DMatchVectorVector();
                         // Find the 2 nearest matches for each descriptor
                         if (this.matcher) {
                             this.matcher.knnMatch(frameData.descriptors, this.referenceDescriptors, matches, 2);
                             let goodMatches = this.filterMatches(matches);
-                            console.log("goodMatches size:", goodMatches.size());
                             frameData.goodMatches = goodMatches;
                         } else {
                             console.warn("matcher not initialized!!");
@@ -219,13 +220,17 @@
             }
 
             visualizeMatches(frameData) {
-                let imgMatches = new cv.Mat();
-                cv.drawMatches(frameData.srcMat, frameData.keypoints, this.referenceMat, this.referenceKeypoints, frameData.goodMatches, imgMatches);
-                cv.imshow('outputCanvas', imgMatches);
-                imgMatches.delete();
+                try{
+                    let imgMatches = new cv.Mat();
+                    cv.drawMatches(frameData.srcMat, frameData.keypoints, this.referenceMat, this.referenceKeypoints, frameData.goodMatches, imgMatches);
+                    cv.imshow('outputCanvas', imgMatches);
+                    imgMatches.delete();
+                } catch (err) {
+                    console.error("visualizeMatches: ", err);
+                }
             }
 
-            filterMatches(matches, distanceThreshold = 0.7) {
+            filterMatches(matches, distanceThreshold = 0.9) {
                 try {
                     let goodMatches = new cv.DMatchVector();
                     let counter = 0;
@@ -246,8 +251,8 @@
 
             calculateTransformationAndOverlay(frameData) {
                 try {
-                    if (frameData.goodMatches.size() < 4) {
-                        console.warn("Not enough matches to calculate a robust homography.");
+                    if (frameData.goodMatches.size() < 40) {
+                        console.warn("111111111: Not enough matches to calculate a robust homography.");
                         return;
                     }
                     let points1 = [];
@@ -264,18 +269,16 @@
                             continue;
                         }
 
-                        points1.push(frameData.keypoints.get(match.queryIdx).pt.x);
-                        points1.push(frameData.keypoints.get(match.queryIdx).pt.y);
-                        points2.push(this.referenceKeypoints.get(match.trainIdx).pt.x);
-                        points2.push(this.referenceKeypoints.get(match.trainIdx).pt.y);
+                        points2.push(frameData.keypoints.get(match.queryIdx).pt.x);
+                        points2.push(frameData.keypoints.get(match.queryIdx).pt.y);
+                        points1.push(this.referenceKeypoints.get(match.trainIdx).pt.x);
+                        points1.push(this.referenceKeypoints.get(match.trainIdx).pt.y);
                     }
 
                     if (points1.length < 8 || points2.length < 8) {
-                        console.warn("Not enough valid matches to calculate homography.");
+                        console.warn("222222222: Not enough valid matches to calculate homography.");
                         return;
                     }
-
-                    console.log("points1:", points1, "points2:", points2);
 
                     var mat1 = new cv.Mat(points1.length / 2, 1, cv.CV_32FC2);
                     mat1.data32F.set(points1);
@@ -300,20 +303,15 @@
                 }
             }
 
+
+
+
+
             applyOverlay(h, frameData) {
                 try {
                     if (!h.empty()) {
                         let transformedOverlay = new cv.Mat();
                         cv.warpPerspective(this.overlayMat, transformedOverlay, h, new cv.Size(this.video.videoWidth, this.video.videoHeight));
-
-                        // Log sizes and types
-                        console.log("srcMat size:", frameData.srcMat.size());
-                        console.log("transformedOverlay size:", transformedOverlay.size());
-                        console.log("overlayMat size:", this.overlayMat.size());
-
-                        console.log("srcMat type:", frameData.srcMat.type());
-                        console.log("transformedOverlay type:", transformedOverlay.type());
-                        console.log("overlayMat type:", this.overlayMat.type());
 
                         // Check matrix sizes
                         if (frameData.srcMat.size().width !== transformedOverlay.size().width ||
@@ -322,14 +320,12 @@
                             transformedOverlay.delete();
                             return;
                         }
-
                         // Check matrix types
                         if (frameData.srcMat.type() !== transformedOverlay.type()) {
                             console.error("Matrix type mismatch: srcMat type:", frameData.srcMat.type(), "transformedOverlay type:", transformedOverlay.type());
                             transformedOverlay.delete();
                             return;
                         }
-
                         // Check for empty matrices
                         if (frameData.srcMat.empty() || transformedOverlay.empty()) {
                             console.error("One of the matrices is empty: srcMat empty:", frameData.srcMat.empty(), "transformedOverlay empty:", transformedOverlay.empty());
@@ -337,16 +333,38 @@
                             return;
                         }
 
-                        let output = new cv.Mat();
-                        try {
-                            cv.addWeighted(frameData.srcMat, 1, transformedOverlay, 1, 0, output);
-                            cv.imshow('outputCanvas', output);
-                        } catch (err) {
-                            console.error("cv.addWeighted error: ", err);
-                        }
 
+                        /*
+                        applyOverlay(h, frameData) {
+                        if (!h.empty()) {
+                            let transformedOverlay = new cv.Mat();
+                            cv.warpPerspective(this.overlayMat, transformedOverlay, h, new cv.Size(this.video.videoWidth, this.video.videoHeight));
+                            
+                            let mask = new cv.Mat();
+                            cv.cvtColor(transformedOverlay, mask, cv.COLOR_BGRA2GRAY);
+                            cv.threshold(mask, mask, 1, 255, cv.THRESH_BINARY);
+                            
+                            let alpha = 0.8; // Adjust alpha for blending
+                            cv.addWeighted(frameData.srcMat, 1 - alpha, transformedOverlay, alpha, 0, frameData.srcMat, -1);
+
+                            cv.imshow('outputCanvas', frameData.srcMat);
+                            mask.delete();
+                            transformedOverlay.delete();
+                        }
+                        h.delete();
+                    }*/
+
+                        // Create mask from the overlay
+                        let mask = new cv.Mat();
+                        cv.cvtColor(transformedOverlay, mask, cv.COLOR_BGRA2GRAY);
+                        cv.threshold(mask, mask, 1, 255, cv.THRESH_BINARY);
+
+                        // Copy transformed overlay onto the source frame using the mask
+                        transformedOverlay.copyTo(frameData.srcMat, mask);
+                        cv.imshow('outputCanvas', frameData.srcMat);
+
+                        mask.delete();
                         transformedOverlay.delete();
-                        output.delete();
                     }
                     h.delete();
                 } catch (err) {
@@ -358,8 +376,8 @@
         }
 
         window.onload = () => {
-            let markerSrc = "http://localhost:8000/images/marker.jpg";
-            let overlaySrc = "http://localhost:8000/images/overlay.jpg";
+            let markerSrc = "http://localhost:8080/images/marker_small.jpg";
+            let overlaySrc = "http://localhost:8080/images/overlay_small.jpg";
             const arFeatureMatcher = new ARFeatureMatcher(document.getElementById("video"), document.getElementById("outputCanvas"), markerSrc, overlaySrc, true);
             arFeatureMatcher.initialize();
         };
