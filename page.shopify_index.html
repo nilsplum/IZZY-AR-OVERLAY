@@ -62,7 +62,7 @@
             console.log("Reference Image Loaded");
             await this.loadOverlayImage(this.overlayImageUrl);
             console.log("Overlay Image Loaded");
-            this.startProcessing(60); // Start processing at 30 FPS
+            this.startProcessing(150); // Start processing at 30 FPS
             console.log("Started Processing");
           } catch (err) {
             console.error("Initialization error: ", err);
@@ -71,21 +71,20 @@
 
         initializeOpenCV() {
           return new Promise((resolve, reject) => {
+            //alert("awaiting opencv");
             if (typeof cv === "undefined") {
+              alert("OpenCV.js not loaded");
               reject("OpenCV.js not loaded");
               return;
             }
             cv["onRuntimeInitialized"] = () => {
+              alert("OpenCV.js successfully loaded");
               this.isOpenCVInitialized = true;
               console.log("OpenCV.js Loaded");
               resolve();
             };
-            setTimeout(() => {
-              if (!this.isOpenCVInitialized) {
-                reject("OpenCV.js failed to load in time.");
-              }
-            }, 5000);
           });
+          alert("init opencv complete");
         }
 
         async setupCVDependentProperties() {
