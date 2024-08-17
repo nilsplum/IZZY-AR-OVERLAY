@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>OpenCV Image Recognition</title>
+    <script
+      async
+      src="{{ 'AR_opencv.js' | asset_url }}"
+      type="text/javascript"
+    ></script>
+    <style>
+      #outputCanvas {
+        border: 10px solid black;
+      }
+    </style>
+  </head>
+  <body>
+    <video id="video" width="640" height="480" autoplay></video>
+    <canvas id="outputCanvas" width="640" height="480"></canvas>
+    <script>
+      class FrameData {
+        constructor(imageData) {
+          this.imageData = imageData;
+          this.srcMat = cv.matFromImageData(imageData);
+          this.grayMat = new cv.Mat();
+          cv.cvtColor(this.srcMat, this.grayMat, cv.COLOR_BGRA2GRAY);
+          this.keypoints = new cv.KeyPointVector();
+          this.descriptors = new cv.Mat();
+          this.goodMatches = new cv.DMatchVector();
+          this.transformationMatrix = null;
+        }
+      }
+
+      class ARFeatureMatcher {
+        constructor(
+          video,
+          canvas,
+          referenceImageUrl,
+          overlayImageUrl,
+          showMatching = false
+        ) {
+          this.video = video;
+          this.canvas = canvas;
+          this.context = canvas.getContext("2d", { willReadFrequently: true });
+          this.referenceImageUrl = referenceImageUrl;
+          this.overlayImageUrl = overlayImageUrl;
+          this.isOpenCVInitialized = false;
+          this.showMatching = showMatching;
+          this.frameQueue = [];
+          this.processing = false;
+        }
+
+        async initialize() {
+          try {
+            await this.initializeOpenCV();
+            console.log("OpenCV Initialized");
+            await this.setupCVDependentProperties();
+            console.log("OpenCV Properties Initialized");
+            await this.initializeCamera();
+            console.log("Camera Initialized");
+            await this.loadReferenceImage(this.referenceImageUrl);
+            console.log("Reference Image Loaded");
+            await this.loadOverlayImage(this.overlayImageUrl);
+            console.log("Overlay Image Loaded");
+            this.startProcessing(60); // Start processing at 30 FPS
+            console.log("Started Processing");
+          } catch (err) {
+            console.error("Initialization error: ", err);
+          }
+        }
+
+        initializeOpenCV() {
+          return new Promise((resolve, reject) => {
+            if (typeof cv === "undefined") {
+              reject("OpenCV.js not loaded");
+              return;
+            }
+            cv["onRuntimeInitialized"] = () => {
+              this.isOpenCVInitialized = true;
+              console.log("OpenCV.js Loaded");
+              resolve();
+            };
+            setTimeout(() => {
+              if (!this.isOpenCVInitialized) {
+                reject("OpenCV.js failed to load in time.");
+              }
+            }, 5000);
+          });
+        }
+
+        async setupCVDependentProperties() {
+          if (this.isOpenCVInitialized) {
+            this.featureDetector = new cv.AKAZE();
+            this.featureDetector.setThreshold(0.001);
+            this.matcher = new cv.BFMatcher();
+          } else {
+            console.error(
+              "Attempted to setup CV properties before OpenCV was initialized."
+            );
+          }
+        }
+
+        initializeCamera() {
+          return navigator.mediaDevices
+            .getUserMedia({ video: true })
+            .then((stream) => {
+              this.video.srcObject = stream;
+              return new Promise((resolve) => {
+                this.video.onloadedmetadata = () => {
+                  this.video.width = this.video.videoWidth;
+                  this.video.height = this.video.videoHeight;
+                  this.canvas.width = this.video.videoWidth;
+                  this.canvas.height = this.video.videoHeight;
+                  console.log(
+                    `initializeCamera: Video initialized with dimensions: ${this.video.videoWidth}x${this.video.videoHeight}`
+                  );
+                  resolve();
+                };
+              });
+            });
+        }
+
+        async loadReferenceImage(url) {
+          let img = new Image();
+          img.crossOrigin = "anonymous";
+          img.src = url;
+          await new Promise((resolve, reject) => {
+            img.onload = () => {
+              let tempMat = cv.imread(img);
+              cv.cvtColor(tempMat, tempMat, cv.COLOR_BGRA2GRAY);
+              this.referenceMat = tempMat;
+              this.referenceKeypoints = new cv.KeyPointVector();
+              this.referenceDescriptors = new cv.Mat();
+              cv.imshow("outputCanvas", this.referenceMat);
+
+              this.featureDetector.detectAndCompute(
+                tempMat,
+                new cv.Mat(),
+                this.referenceKeypoints,
+                this.referenceDescriptors
+              );
+              if (this.referenceDescriptors.empty()) {
+                console.warn(
+                  "Reference descriptors are empty after initialization"
+                );
+              }
+              console.log("Reference image loaded and features detected");
+              resolve();
+            };
+            img.onerror = (err) => {
+              console.error("Failed to load reference image: " + err);
+              reject(err);
+            };
+          });
+        }
+
+        async loadOverlayImage(url) {
+          let img = new Image();
+          img.crossOrigin = "anonymous";
+          img.src = url;
+          await new Promise((resolve, reject) => {
+            img.onload = () => {
+              this.overlayMat = cv.imread(img);
+              console.log("Overlay image loaded");
+              resolve();
+            };
+            img.onerror = (err) => {
+              console.error("Failed to load overlay image: " + err);
+              reject(err);
+            };
+          });
+        }
+
+        startProcessing(fps) {
+          setInterval(() => {
+            this.captureAndProcessFrame();
+          }, 1000 / fps);
+        }
+
+        async captureAndProcessFrame() {
+          try {
+            if (this.processing) return;
+            this.processing = true;
+
+            // Ensure canvas dimensions are set correctly once
+            if (
+              this.video.videoWidth !== this.canvas.width ||
+              this.video.videoHeight !== this.canvas.height
+            ) {
+              this.canvas.width = this.video.videoWidth;
+              this.canvas.height = this.video.videoHeight;
+            }
+
+            this.context.drawImage(
+              this.video,
+              0,
+              0,
+              this.canvas.width,
+              this.canvas.height
+            );
+            let imageData = this.context.getImageData(
+              0,
+              0,
+              this.canvas.width,
+              this.canvas.height
+            );
+            let frameData = new FrameData(imageData);
+            this.frameQueue.push(frameData);
+
+            await this.processQueue();
+            this.processing = false;
+          } catch (err) {
+            console.error("captureAndProcessFrame: ", err);
+          }
+        }
+
+        async processQueue() {
+          try {
+            while (this.frameQueue.length > 0) {
+              const frameData = this.frameQueue.shift();
+              await this.detectFeaturesAndMatch(frameData);
+              if (this.showMatching) {
+                //this.visualizeMatches(frameData);
+              }
+              if (frameData.goodMatches.size() > 0) {
+                this.calculateTransformationAndOverlay(frameData);
+              }
+            }
+          } catch (err) {
+            console.error("processQueue: ", err);
+          }
+        }
+
+        async detectFeaturesAndMatch(frameData) {
+          if (!this.isOpenCVInitialized) {
+            console.warn("Initialization incomplete.");
+            return;
+          }
+          try {
+            this.featureDetector.detectAndCompute(
+              frameData.grayMat,
+              new cv.Mat(),
+              frameData.keypoints,
+              frameData.descriptors
+            );
+            if (
+              !this.referenceDescriptors.empty() &&
+              !frameData.descriptors.empty()
+            ) {
+              let matches = new cv.DMatchVectorVector();
+              if (this.matcher) {
+                this.matcher.knnMatch(
+                  frameData.descriptors,
+                  this.referenceDescriptors,
+                  matches,
+                  2
+                );
+                let goodMatches = this.filterMatches(matches);
+                frameData.goodMatches = goodMatches;
+              } else {
+                console.warn("matcher not initialized!!");
+              }
+            } else {
+              console.warn(
+                "DetectFeaturesAndMatch: some descriptors are empty"
+              );
+            }
+          } catch (err) {
+            console.error("detectFeaturesAndMatch: ", err);
+          }
+        }
+
+        visualizeMatches(frameData) {
+          try {
+            let imgMatches = new cv.Mat();
+            cv.drawMatches(
+              frameData.srcMat,
+              frameData.keypoints,
+              this.referenceMat,
+              this.referenceKeypoints,
+              frameData.goodMatches,
+              imgMatches
+            );
+            cv.imshow("outputCanvas", imgMatches);
+            imgMatches.delete();
+          } catch (err) {
+            console.error("visualizeMatches: ", err);
+          }
+        }
+
+        filterMatches(matches, distanceThreshold = 0.9) {
+          try {
+            let goodMatches = new cv.DMatchVector();
+            for (let i = 0; i < matches.size(); ++i) {
+              let match = matches.get(i);
+              let dMatch1 = match.get(0);
+              let dMatch2 = match.get(1);
+              if (
+                dMatch1.distance <=
+                dMatch2.distance * parseFloat(distanceThreshold)
+              ) {
+                goodMatches.push_back(dMatch1);
+              }
+            }
+            return goodMatches;
+          } catch (err) {
+            console.error("filterMatches:", err);
+          }
+        }
+
+        calculateTransformationAndOverlay(frameData) {
+          try {
+            if (frameData.goodMatches.size() < 5) {
+              console.warn(
+                "Not enough matches to calculate a robust homography."
+              );
+              return;
+            }
+            let points1 = [];
+            let points2 = [];
+
+            for (let i = 0; i < frameData.goodMatches.size(); i++) {
+              let match = frameData.goodMatches.get(i);
+              if (
+                match.queryIdx >= frameData.keypoints.size() ||
+                match.trainIdx >= this.referenceKeypoints.size()
+              ) {
+                continue;
+              }
+
+              points2.push(frameData.keypoints.get(match.queryIdx).pt.x);
+              points2.push(frameData.keypoints.get(match.queryIdx).pt.y);
+              points1.push(this.referenceKeypoints.get(match.trainIdx).pt.x);
+              points1.push(this.referenceKeypoints.get(match.trainIdx).pt.y);
+            }
+
+            if (points1.length < 8 || points2.length < 8) {
+              console.warn("Not enough valid matches to calculate homography.");
+              return;
+            }
+
+            let mat1 = new cv.Mat(points1.length / 2, 1, cv.CV_32FC2);
+            mat1.data32F.set(points1);
+
+            let mat2 = new cv.Mat(points2.length / 2, 1, cv.CV_32FC2);
+            mat2.data32F.set(points2);
+
+            let h = cv.findHomography(mat1, mat2, cv.RANSAC);
+
+            if (h.empty()) {
+              console.error("Homography matrix is empty");
+              mat1.delete();
+              mat2.delete();
+              return;
+            }
+
+            this.applyOverlay(h, frameData);
+            mat1.delete();
+            mat2.delete();
+          } catch (err) {
+            console.error("calculateTransformationAndOverlay: ", err);
+          }
+        }
+
+        applyOverlay(h, frameData) {
+          try {
+            if (!h.empty()) {
+              let transformedOverlay = new cv.Mat();
+              cv.warpPerspective(
+                this.overlayMat,
+                transformedOverlay,
+                h,
+                new cv.Size(this.video.videoWidth, this.video.videoHeight)
+              );
+
+              let mask = new cv.Mat();
+              cv.cvtColor(transformedOverlay, mask, cv.COLOR_BGRA2GRAY);
+              cv.threshold(mask, mask, 1, 255, cv.THRESH_BINARY);
+
+              transformedOverlay.copyTo(frameData.srcMat, mask);
+              cv.imshow("outputCanvas", frameData.srcMat);
+
+              mask.delete();
+              transformedOverlay.delete();
+            }
+            h.delete();
+          } catch (err) {
+            console.error("applyOverlay: ", err);
+          }
+        }
+      }
+
+      function getQueryParams() {
+        const params = new URLSearchParams(window.location.search);
+        return {
+          imageBaseName: params.get("image") || "default",
+        };
+      }
+
+      window.onload = () => {
+        const referenceSrc =
+          "//izzyweissgerber.com/cdn/shop/t/9/assets/AR_lady_marker.jpg";
+        const overlaySrc =
+          "//izzyweissgerber.com/cdn/shop/t/9/assets/AR_lady_overlay.jpg";
+
+        const arFeatureMatcher = new ARFeatureMatcher(
+          document.getElementById("video"),
+          document.getElementById("outputCanvas"),
+          referenceSrc,
+          overlaySrc,
+          true
+        );
+        arFeatureMatcher.initialize();
+      };
+
+      window.addEventListener("beforeunload", () => {
+        cv.destroyAllWindows();
+      });
+
+      window.addEventListener("beforeunload", () => {
+        cv.destroyAllWindows();
+      });
+    </script>
+  </body>
+</html>

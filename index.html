@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <title>OpenCV Image Recognition</title>
     <script async src="opencv.js" type="text/javascript"></script>
+    <script async src="transformationSmoothening.js" type="text/javascript"></script>
+
     <style>
         #outputCanvas {
             border: 10px solid black;
@@ -24,11 +26,13 @@
                 this.descriptors = new cv.Mat();
                 this.goodMatches = new cv.DMatchVector();
                 this.transformationMatrix = null;
+                
             }
         }
 
         class ARFeatureMatcher {
             constructor(video, canvas, referenceImageUrl, overlayImageUrl, showMatching = false) {
+                //this.smoothnessFilter = new ComprehensiveSmoothnessFilter(5, 0.1, 0.5); // Initialize with desired parameters
                 this.video = video;
                 this.canvas = canvas;
                 this.context = canvas.getContext('2d', { willReadFrequently: true });
@@ -81,6 +85,11 @@
             async setupCVDependentProperties() {
                 if (this.isOpenCVInitialized) {
                     this.featureDetector = new cv.AKAZE();
+                    // Unfortunately, OpenCV.js might not support setting these parameters directly.
+                    // This is a hypothetical code block, actual support needs to be verified.
+
+
+                    this.featureDetector.setThreshold(0.001);
                     this.matcher = new cv.BFMatcher();
                 } else {
                     console.error("Attempted to setup CV properties before OpenCV was initialized.");
@@ -183,7 +192,7 @@
                         const frameData = this.frameQueue.shift();
                         await this.detectFeaturesAndMatch(frameData);
                         if (this.showMatching) {
-                            this.visualizeMatches(frameData);
+                            //this.visualizeMatches(frameData);
                         }
                         if (frameData.goodMatches.size() > 0) {
                             this.calculateTransformationAndOverlay(frameData);
@@ -230,7 +239,7 @@
                 }
             }
 
-            filterMatches(matches, distanceThreshold = 0.9) {
+            filterMatches(matches, distanceThreshold = 0.9 ) {
                 try {
                     let goodMatches = new cv.DMatchVector();
                     let counter = 0;
@@ -250,8 +259,9 @@
             }
 
             calculateTransformationAndOverlay(frameData) {
+                console.log(frameData.goodMatches.size());
                 try {
-                    if (frameData.goodMatches.size() < 40) {
+                    if (frameData.goodMatches.size() < 5) {
                         console.warn("111111111: Not enough matches to calculate a robust homography.");
                         return;
                     }
@@ -294,6 +304,11 @@
                         mat2.delete();
                         return;
                     }
+
+
+                    // Add the new homography to the filter
+                    // this.smoothnessFilter.addHomography(h);
+                    // h = this.smoothnessFilter.getFilteredHomography();    
 
                     this.applyOverlay(h, frameData);
                     mat1.delete();
@@ -363,8 +378,12 @@
                         transformedOverlay.copyTo(frameData.srcMat, mask);
                         cv.imshow('outputCanvas', frameData.srcMat);
 
-                        mask.delete();
-                        transformedOverlay.delete();
+                        try{
+                            mask.delete();
+                            transformedOverlay.delete();
+                        } catch (err) {
+                            console.error("applyOverlay delete: ", err);
+                        }
                     }
                     h.delete();
                 } catch (err) {
