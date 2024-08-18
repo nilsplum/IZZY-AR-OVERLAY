@@ -1,0 +1,440 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta http-equiv="Content-Style-Type" content="text/css">
+  <title></title>
+  <meta name="Generator" content="Cocoa HTML Writer">
+  <meta name="CocoaVersion" content="2487.6">
+  <style type="text/css">
+    p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica}
+    p.p2 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica; min-height: 14.0px}
+  </style>
+</head>
+<body>
+<p class="p1">&lt;!DOCTYPE html&gt;</p>
+<p class="p1">&lt;html lang="en"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;head&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;meta charset="UTF-8" /&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;title&gt;OpenCV Image Recognition&lt;/title&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;script</p>
+<p class="p1"><span class="Apple-converted-space">      </span>async</p>
+<p class="p1"><span class="Apple-converted-space">      </span>src="{{ 'AR_opencv.js' | asset_url }}"</p>
+<p class="p1"><span class="Apple-converted-space">      </span>type="text/javascript"</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&gt;&lt;/script&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;style&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>#outputCanvas {</p>
+<p class="p1"><span class="Apple-converted-space">        </span>border: 10px solid black;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;/style&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;/head&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;body&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;video id="video" width="640" height="480" autoplay&gt;&lt;/video&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;canvas id="outputCanvas" width="640" height="480"&gt;&lt;/canvas&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;script&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>class FrameData {</p>
+<p class="p1"><span class="Apple-converted-space">        </span>constructor(imageData) {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.imageData = imageData;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.srcMat = cv.matFromImageData(imageData);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.grayMat = new cv.Mat();</p>
+<p class="p1"><span class="Apple-converted-space">          </span>cv.cvtColor(this.srcMat, this.grayMat, cv.COLOR_BGRA2GRAY);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.keypoints = new cv.KeyPointVector();</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.descriptors = new cv.Mat();</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.goodMatches = new cv.DMatchVector();</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.transformationMatrix = null;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p1"><span class="Apple-converted-space">      </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>class ARFeatureMatcher {</p>
+<p class="p1"><span class="Apple-converted-space">        </span>constructor(</p>
+<p class="p1"><span class="Apple-converted-space">          </span>video,</p>
+<p class="p1"><span class="Apple-converted-space">          </span>canvas,</p>
+<p class="p1"><span class="Apple-converted-space">          </span>referenceImageUrl,</p>
+<p class="p1"><span class="Apple-converted-space">          </span>overlayImageUrl,</p>
+<p class="p1"><span class="Apple-converted-space">          </span>showMatching = false</p>
+<p class="p1"><span class="Apple-converted-space">        </span>) {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.video = video;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.canvas = canvas;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.context = canvas.getContext("2d", { willReadFrequently: true });</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.referenceImageUrl = referenceImageUrl;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.overlayImageUrl = overlayImageUrl;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.isOpenCVInitialized = false;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.showMatching = showMatching;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.frameQueue = [];</p>
+<p class="p1"><span class="Apple-converted-space">          </span>this.processing = false;</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>async initialize() {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>try {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>await this.initializeOpenCV();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.log("OpenCV Initialized");</p>
+<p class="p1"><span class="Apple-converted-space">            </span>await this.setupCVDependentProperties();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.log("OpenCV Properties Initialized");</p>
+<p class="p1"><span class="Apple-converted-space">            </span>await this.initializeCamera();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.log("Camera Initialized");</p>
+<p class="p1"><span class="Apple-converted-space">            </span>await this.loadReferenceImage(this.referenceImageUrl);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.log("Reference Image Loaded");</p>
+<p class="p1"><span class="Apple-converted-space">            </span>await this.loadOverlayImage(this.overlayImageUrl);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.log("Overlay Image Loaded");</p>
+<p class="p1"><span class="Apple-converted-space">            </span>this.startProcessing(150); // Start processing at 30 FPS</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.log("Started Processing");</p>
+<p class="p1"><span class="Apple-converted-space">          </span>} catch (err) {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.error("Initialization error: ", err);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>}</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p2"><span class="Apple-converted-space">        </span></p>
+<p class="p1"><span class="Apple-converted-space">        </span>initializeOpenCV() {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>return new Promise((resolve, reject) =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>alert("awaiting opencv");</p>
+<p class="p1"><span class="Apple-converted-space">            </span>if (typeof cv === "undefined") {</p>
+<p class="p1"><span class="Apple-converted-space">                </span>alert("OpenCV.js not loaded");</p>
+<p class="p1"><span class="Apple-converted-space">                </span>reject("OpenCV.js not loaded");</p>
+<p class="p1"><span class="Apple-converted-space">                </span>return;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>}</p>
+<p class="p1"><span class="Apple-converted-space">            </span>cv["onRuntimeInitialized"] = () =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>alert("OpenCV.js successfully loaded");</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.isOpenCVInitialized = true;</p>
+<p class="p1"><span class="Apple-converted-space">              </span>console.log("OpenCV.js Loaded");</p>
+<p class="p1"><span class="Apple-converted-space">              </span>resolve();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>};</p>
+<p class="p1"><span class="Apple-converted-space">          </span>});</p>
+<p class="p1"><span class="Apple-converted-space">          </span>alert("init opencv complete");</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>async setupCVDependentProperties() {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>if (this.isOpenCVInitialized) {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>this.featureDetector = new cv.AKAZE();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>this.featureDetector.setThreshold(0.001);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>this.matcher = new cv.BFMatcher();</p>
+<p class="p1"><span class="Apple-converted-space">          </span>} else {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.error(</p>
+<p class="p1"><span class="Apple-converted-space">              </span>"Attempted to setup CV properties before OpenCV was initialized."</p>
+<p class="p1"><span class="Apple-converted-space">            </span>);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>}</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>initializeCamera() {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>return navigator.mediaDevices</p>
+<p class="p1"><span class="Apple-converted-space">            </span>.getUserMedia({ video: true })</p>
+<p class="p1"><span class="Apple-converted-space">            </span>.then((stream) =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.video.srcObject = stream;</p>
+<p class="p1"><span class="Apple-converted-space">              </span>return new Promise((resolve) =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">                </span>this.video.onloadedmetadata = () =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>this.video.width = this.video.videoWidth;</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>this.video.height = this.video.videoHeight;</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>this.canvas.width = this.video.videoWidth;</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>this.canvas.height = this.video.videoHeight;</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>console.log(</p>
+<p class="p1"><span class="Apple-converted-space">                    </span>`initializeCamera: Video initialized with dimensions: ${this.video.videoWidth}x${this.video.videoHeight}`</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>);</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>resolve();</p>
+<p class="p1"><span class="Apple-converted-space">                </span>};</p>
+<p class="p1"><span class="Apple-converted-space">              </span>});</p>
+<p class="p1"><span class="Apple-converted-space">            </span>});</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>async loadReferenceImage(url) {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>let img = new Image();</p>
+<p class="p1"><span class="Apple-converted-space">          </span>img.crossOrigin = "anonymous";</p>
+<p class="p1"><span class="Apple-converted-space">          </span>img.src = url;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>await new Promise((resolve, reject) =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>img.onload = () =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>let tempMat = cv.imread(img);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>cv.cvtColor(tempMat, tempMat, cv.COLOR_BGRA2GRAY);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.referenceMat = tempMat;</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.referenceKeypoints = new cv.KeyPointVector();</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.referenceDescriptors = new cv.Mat();</p>
+<p class="p1"><span class="Apple-converted-space">              </span>cv.imshow("outputCanvas", this.referenceMat);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.featureDetector.detectAndCompute(</p>
+<p class="p1"><span class="Apple-converted-space">                </span>tempMat,</p>
+<p class="p1"><span class="Apple-converted-space">                </span>new cv.Mat(),</p>
+<p class="p1"><span class="Apple-converted-space">                </span>this.referenceKeypoints,</p>
+<p class="p1"><span class="Apple-converted-space">                </span>this.referenceDescriptors</p>
+<p class="p1"><span class="Apple-converted-space">              </span>);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>if (this.referenceDescriptors.empty()) {</p>
+<p class="p1"><span class="Apple-converted-space">                </span>console.warn(</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>"Reference descriptors are empty after initialization"</p>
+<p class="p1"><span class="Apple-converted-space">                </span>);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>}</p>
+<p class="p1"><span class="Apple-converted-space">              </span>console.log("Reference image loaded and features detected");</p>
+<p class="p1"><span class="Apple-converted-space">              </span>resolve();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>};</p>
+<p class="p1"><span class="Apple-converted-space">            </span>img.onerror = (err) =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>console.error("Failed to load reference image: " + err);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>reject(err);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>};</p>
+<p class="p1"><span class="Apple-converted-space">          </span>});</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>async loadOverlayImage(url) {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>let img = new Image();</p>
+<p class="p1"><span class="Apple-converted-space">          </span>img.crossOrigin = "anonymous";</p>
+<p class="p1"><span class="Apple-converted-space">          </span>img.src = url;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>await new Promise((resolve, reject) =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>img.onload = () =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.overlayMat = cv.imread(img);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>console.log("Overlay image loaded");</p>
+<p class="p1"><span class="Apple-converted-space">              </span>resolve();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>};</p>
+<p class="p1"><span class="Apple-converted-space">            </span>img.onerror = (err) =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>console.error("Failed to load overlay image: " + err);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>reject(err);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>};</p>
+<p class="p1"><span class="Apple-converted-space">          </span>});</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>startProcessing(fps) {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>setInterval(() =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>this.captureAndProcessFrame();</p>
+<p class="p1"><span class="Apple-converted-space">          </span>}, 1000 / fps);</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>async captureAndProcessFrame() {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>try {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>if (this.processing) return;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>this.processing = true;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">            </span>// Ensure canvas dimensions are set correctly once</p>
+<p class="p1"><span class="Apple-converted-space">            </span>if (</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.video.videoWidth !== this.canvas.width ||</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.video.videoHeight !== this.canvas.height</p>
+<p class="p1"><span class="Apple-converted-space">            </span>) {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.canvas.width = this.video.videoWidth;</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.canvas.height = this.video.videoHeight;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">            </span>this.context.drawImage(</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.video,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>0,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>0,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.canvas.width,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.canvas.height</p>
+<p class="p1"><span class="Apple-converted-space">            </span>);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>let imageData = this.context.getImageData(</p>
+<p class="p1"><span class="Apple-converted-space">              </span>0,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>0,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.canvas.width,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.canvas.height</p>
+<p class="p1"><span class="Apple-converted-space">            </span>);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>let frameData = new FrameData(imageData);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>this.frameQueue.push(frameData);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">            </span>await this.processQueue();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>this.processing = false;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>} catch (err) {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.error("captureAndProcessFrame: ", err);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>}</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>async processQueue() {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>try {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>while (this.frameQueue.length &gt; 0) {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>const frameData = this.frameQueue.shift();</p>
+<p class="p1"><span class="Apple-converted-space">              </span>await this.detectFeaturesAndMatch(frameData);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>if (this.showMatching) {</p>
+<p class="p1"><span class="Apple-converted-space">                </span>//this.visualizeMatches(frameData);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>}</p>
+<p class="p1"><span class="Apple-converted-space">              </span>if (frameData.goodMatches.size() &gt; 0) {</p>
+<p class="p1"><span class="Apple-converted-space">                </span>this.calculateTransformationAndOverlay(frameData);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>}</p>
+<p class="p1"><span class="Apple-converted-space">            </span>}</p>
+<p class="p1"><span class="Apple-converted-space">          </span>} catch (err) {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.error("processQueue: ", err);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>}</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>async detectFeaturesAndMatch(frameData) {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>if (!this.isOpenCVInitialized) {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.warn("Initialization incomplete.");</p>
+<p class="p1"><span class="Apple-converted-space">            </span>return;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>}</p>
+<p class="p1"><span class="Apple-converted-space">          </span>try {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>this.featureDetector.detectAndCompute(</p>
+<p class="p1"><span class="Apple-converted-space">              </span>frameData.grayMat,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>new cv.Mat(),</p>
+<p class="p1"><span class="Apple-converted-space">              </span>frameData.keypoints,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>frameData.descriptors</p>
+<p class="p1"><span class="Apple-converted-space">            </span>);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>if (</p>
+<p class="p1"><span class="Apple-converted-space">              </span>!this.referenceDescriptors.empty() &amp;&amp;</p>
+<p class="p1"><span class="Apple-converted-space">              </span>!frameData.descriptors.empty()</p>
+<p class="p1"><span class="Apple-converted-space">            </span>) {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>let matches = new cv.DMatchVectorVector();</p>
+<p class="p1"><span class="Apple-converted-space">              </span>if (this.matcher) {</p>
+<p class="p1"><span class="Apple-converted-space">                </span>this.matcher.knnMatch(</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>frameData.descriptors,</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>this.referenceDescriptors,</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>matches,</p>
+<p class="p1"><span class="Apple-converted-space">                  </span>2</p>
+<p class="p1"><span class="Apple-converted-space">                </span>);</p>
+<p class="p1"><span class="Apple-converted-space">                </span>let goodMatches = this.filterMatches(matches);</p>
+<p class="p1"><span class="Apple-converted-space">                </span>frameData.goodMatches = goodMatches;</p>
+<p class="p1"><span class="Apple-converted-space">              </span>} else {</p>
+<p class="p1"><span class="Apple-converted-space">                </span>console.warn("matcher not initialized!!");</p>
+<p class="p1"><span class="Apple-converted-space">              </span>}</p>
+<p class="p1"><span class="Apple-converted-space">            </span>} else {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>console.warn(</p>
+<p class="p1"><span class="Apple-converted-space">                </span>"DetectFeaturesAndMatch: some descriptors are empty"</p>
+<p class="p1"><span class="Apple-converted-space">              </span>);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>}</p>
+<p class="p1"><span class="Apple-converted-space">          </span>} catch (err) {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.error("detectFeaturesAndMatch: ", err);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>}</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>visualizeMatches(frameData) {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>try {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>let imgMatches = new cv.Mat();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>cv.drawMatches(</p>
+<p class="p1"><span class="Apple-converted-space">              </span>frameData.srcMat,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>frameData.keypoints,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.referenceMat,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>this.referenceKeypoints,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>frameData.goodMatches,</p>
+<p class="p1"><span class="Apple-converted-space">              </span>imgMatches</p>
+<p class="p1"><span class="Apple-converted-space">            </span>);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>cv.imshow("outputCanvas", imgMatches);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>imgMatches.delete();</p>
+<p class="p1"><span class="Apple-converted-space">          </span>} catch (err) {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.error("visualizeMatches: ", err);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>}</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>filterMatches(matches, distanceThreshold = 0.9) {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>try {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>let goodMatches = new cv.DMatchVector();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>for (let i = 0; i &lt; matches.size(); ++i) {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>let match = matches.get(i);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>let dMatch1 = match.get(0);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>let dMatch2 = match.get(1);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>if (</p>
+<p class="p1"><span class="Apple-converted-space">                </span>dMatch1.distance &lt;=</p>
+<p class="p1"><span class="Apple-converted-space">                </span>dMatch2.distance * parseFloat(distanceThreshold)</p>
+<p class="p1"><span class="Apple-converted-space">              </span>) {</p>
+<p class="p1"><span class="Apple-converted-space">                </span>goodMatches.push_back(dMatch1);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>}</p>
+<p class="p1"><span class="Apple-converted-space">            </span>}</p>
+<p class="p1"><span class="Apple-converted-space">            </span>return goodMatches;</p>
+<p class="p1"><span class="Apple-converted-space">          </span>} catch (err) {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.error("filterMatches:", err);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>}</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>calculateTransformationAndOverlay(frameData) {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>try {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>if (frameData.goodMatches.size() &lt; 5) {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>console.warn(</p>
+<p class="p1"><span class="Apple-converted-space">                </span>"Not enough matches to calculate a robust homography."</p>
+<p class="p1"><span class="Apple-converted-space">              </span>);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>return;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>}</p>
+<p class="p1"><span class="Apple-converted-space">            </span>let points1 = [];</p>
+<p class="p1"><span class="Apple-converted-space">            </span>let points2 = [];</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">            </span>for (let i = 0; i &lt; frameData.goodMatches.size(); i++) {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>let match = frameData.goodMatches.get(i);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>if (</p>
+<p class="p1"><span class="Apple-converted-space">                </span>match.queryIdx &gt;= frameData.keypoints.size() ||</p>
+<p class="p1"><span class="Apple-converted-space">                </span>match.trainIdx &gt;= this.referenceKeypoints.size()</p>
+<p class="p1"><span class="Apple-converted-space">              </span>) {</p>
+<p class="p1"><span class="Apple-converted-space">                </span>continue;</p>
+<p class="p1"><span class="Apple-converted-space">              </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">              </span>points2.push(frameData.keypoints.get(match.queryIdx).pt.x);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>points2.push(frameData.keypoints.get(match.queryIdx).pt.y);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>points1.push(this.referenceKeypoints.get(match.trainIdx).pt.x);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>points1.push(this.referenceKeypoints.get(match.trainIdx).pt.y);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">            </span>if (points1.length &lt; 8 || points2.length &lt; 8) {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>console.warn("Not enough valid matches to calculate homography.");</p>
+<p class="p1"><span class="Apple-converted-space">              </span>return;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">            </span>let mat1 = new cv.Mat(points1.length / 2, 1, cv.CV_32FC2);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>mat1.data32F.set(points1);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">            </span>let mat2 = new cv.Mat(points2.length / 2, 1, cv.CV_32FC2);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>mat2.data32F.set(points2);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">            </span>let h = cv.findHomography(mat1, mat2, cv.RANSAC);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">            </span>if (h.empty()) {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>console.error("Homography matrix is empty");</p>
+<p class="p1"><span class="Apple-converted-space">              </span>mat1.delete();</p>
+<p class="p1"><span class="Apple-converted-space">              </span>mat2.delete();</p>
+<p class="p1"><span class="Apple-converted-space">              </span>return;</p>
+<p class="p1"><span class="Apple-converted-space">            </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">            </span>this.applyOverlay(h, frameData);</p>
+<p class="p1"><span class="Apple-converted-space">            </span>mat1.delete();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>mat2.delete();</p>
+<p class="p1"><span class="Apple-converted-space">          </span>} catch (err) {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.error("calculateTransformationAndOverlay: ", err);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>}</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">        </span>applyOverlay(h, frameData) {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>try {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>if (!h.empty()) {</p>
+<p class="p1"><span class="Apple-converted-space">              </span>let transformedOverlay = new cv.Mat();</p>
+<p class="p1"><span class="Apple-converted-space">              </span>cv.warpPerspective(</p>
+<p class="p1"><span class="Apple-converted-space">                </span>this.overlayMat,</p>
+<p class="p1"><span class="Apple-converted-space">                </span>transformedOverlay,</p>
+<p class="p1"><span class="Apple-converted-space">                </span>h,</p>
+<p class="p1"><span class="Apple-converted-space">                </span>new cv.Size(this.video.videoWidth, this.video.videoHeight)</p>
+<p class="p1"><span class="Apple-converted-space">              </span>);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">              </span>let mask = new cv.Mat();</p>
+<p class="p1"><span class="Apple-converted-space">              </span>cv.cvtColor(transformedOverlay, mask, cv.COLOR_BGRA2GRAY);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>cv.threshold(mask, mask, 1, 255, cv.THRESH_BINARY);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">              </span>transformedOverlay.copyTo(frameData.srcMat, mask);</p>
+<p class="p1"><span class="Apple-converted-space">              </span>cv.imshow("outputCanvas", frameData.srcMat);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">              </span>mask.delete();</p>
+<p class="p1"><span class="Apple-converted-space">              </span>transformedOverlay.delete();</p>
+<p class="p1"><span class="Apple-converted-space">            </span>}</p>
+<p class="p1"><span class="Apple-converted-space">            </span>h.delete();</p>
+<p class="p1"><span class="Apple-converted-space">          </span>} catch (err) {</p>
+<p class="p1"><span class="Apple-converted-space">            </span>console.error("applyOverlay: ", err);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>}</p>
+<p class="p1"><span class="Apple-converted-space">        </span>}</p>
+<p class="p1"><span class="Apple-converted-space">      </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>function getQueryParams() {</p>
+<p class="p1"><span class="Apple-converted-space">        </span>const params = new URLSearchParams(window.location.search);</p>
+<p class="p1"><span class="Apple-converted-space">        </span>return {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>imageBaseName: params.get("image") || "default",</p>
+<p class="p1"><span class="Apple-converted-space">        </span>};</p>
+<p class="p1"><span class="Apple-converted-space">      </span>}</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>window.onload = () =&gt; {</p>
+<p class="p2"><span class="Apple-converted-space">          </span></p>
+<p class="p1"><span class="Apple-converted-space">          </span>const referenceSrc = "//izzyweissgerber.com/cdn/shop/t/9/assets/AR_lady_marker.jpg";</p>
+<p class="p1"><span class="Apple-converted-space">          </span>const overlaySrc = "//izzyweissgerber.com/cdn/shop/t/9/assets/AR_lady_overlay.jpg";</p>
+<p class="p2"><span class="Apple-converted-space">        </span></p>
+<p class="p1"><span class="Apple-converted-space">          </span>const arFeatureMatcher = new ARFeatureMatcher(</p>
+<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById("video"),</p>
+<p class="p1"><span class="Apple-converted-space">            </span>document.getElementById("outputCanvas"),</p>
+<p class="p1"><span class="Apple-converted-space">            </span>referenceSrc,</p>
+<p class="p1"><span class="Apple-converted-space">            </span>overlaySrc,</p>
+<p class="p1"><span class="Apple-converted-space">            </span>true</p>
+<p class="p1"><span class="Apple-converted-space">          </span>);</p>
+<p class="p1"><span class="Apple-converted-space">          </span>arFeatureMatcher.initialize();</p>
+<p class="p1"><span class="Apple-converted-space">      </span>};</p>
+<p class="p2"><span class="Apple-converted-space">      </span></p>
+<p class="p1"><span class="Apple-converted-space">      </span>window.addEventListener("beforeunload", () =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>cv.destroyAllWindows();</p>
+<p class="p1"><span class="Apple-converted-space">      </span>});</p>
+<p class="p2"><span class="Apple-converted-space">      </span></p>
+<p class="p1"><span class="Apple-converted-space">      </span>window.addEventListener("beforeunload", () =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">          </span>cv.destroyAllWindows();</p>
+<p class="p1"><span class="Apple-converted-space">      </span>});</p>
+<p class="p1"><span class="Apple-converted-space">    </span>&lt;/script&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;/body&gt;</p>
+<p class="p1">&lt;/html&gt;</p>
+</body>
+</html>
