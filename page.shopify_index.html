@@ -270,7 +270,7 @@
               return;
             }
 
-            console.log("Good matches count:", frameData.goodMatches.size());
+            //console.log("Good matches count:", frameData.goodMatches.size());
 
             let points1 = [];
             let points2 = [];
@@ -290,11 +290,6 @@
               points1.push(this.referenceKeypoints.get(match.trainIdx).pt.y);
             }
 
-            console.log(
-              "Points arrays prepared. Points1 length:",
-              points1.length
-            );
-
             if (points1.length < 8 || points2.length < 8) {
               console.warn("Not enough valid matches to calculate homography.");
               return;
@@ -306,7 +301,7 @@
             let mat2 = new cv.Mat(points2.length / 2, 1, cv.CV_32FC2);
             mat2.data32F.set(points2);
 
-            console.log("Matrices created for homography calculation.");
+            //console.log("Matrices created for homography calculation.");
 
             let h = cv.findHomography(mat1, mat2, cv.RANSAC);
 
@@ -316,8 +311,6 @@
               mat2.delete();
               return;
             }
-
-            console.log("Homography matrix calculated:", h);
 
             this.applyOverlay(h, frameData);
             mat1.delete();
