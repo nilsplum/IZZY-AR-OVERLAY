@@ -26,18 +26,20 @@
         constructor(
           canvas,
           referenceImageUrl,
-          overlayVideoUrl,
+          overlayImagePath,
           showMatching = false
         ) {
           this.canvas = canvas;
           this.context = canvas.getContext("2d", { willReadFrequently: true });
           this.referenceImageUrl = referenceImageUrl;
-          this.overlayVideoUrl = overlayVideoUrl;
+          this.overlayImagePath = overlayImagePath; // Changed to reflect PNG path
           this.isOpenCVInitialized = false;
           this.showMatching = showMatching;
           this.frameQueue = [];
           this.processing = false;
-          this.imageCapture = null; // Initialize the imageCapture object
+          this.imageCapture = null;
+          this.overlayPNGs = []; // To store the preloaded PNGs
+          this.currentFrameIndex = 0; // To track which PNG to display
         }
 
         async initialize() {
@@ -50,9 +52,9 @@
             console.log("Camera Initialized");
             await this.loadReferenceImage(this.referenceImageUrl);
             console.log("Reference Image Loaded");
-            await this.loadOverlayVideo(this.overlayVideoUrl); // Updated for video
-            console.log("Overlay Video Loaded");
-            this.startProcessing(); // Start the frame processing loop
+            await this.loadOverlayPNGs(); // Replacing video loading with PNG sequence loading
+            console.log("Overlay PNGs Loaded");
+            this.startProcessing();
             console.log("Started Processing");
           } catch (err) {
             console.error("Initialization error: ", err);
@@ -202,49 +204,38 @@
           }
         }
 
-        async loadOverlayVideo(url) {
+        async loadOverlayPNGs() {
           try {
-            console.log("Loading overlay video from URL: ", url);
+            console.log("Loading overlay PNG sequence");
 
-            this.overlayVideo = document.createElement("video");
-            this.overlayVideo.crossOrigin = "anonymous"; // Set CORS before src
-            this.overlayVideo.src = url;
-            this.overlayVideo.muted = true;
-            this.overlayVideo.loop = true;
-            this.overlayVideo.style.display = "none"; // Ensure it stays invisible
-            document.body.appendChild(this.overlayVideo);
-
-            await new Promise((resolve, reject) => {
-              this.overlayVideo.onloadeddata = () => {
-                console.log("Overlay video loaded and ready for playback.");
-                try {
-                  this.overlayVideo.play().catch((err) => {
-                    console.error("Error playing video: ", err);
-                    reject(err);
-                  });
+            let numFrames = 10; // Example: total number of PNG frames
+            for (let i = 1; i <= numFrames; i++) {
+              let img = new Image();
+              img.src = `${this.overlayImagePath}/PNG_${String(i).padStart(
+                4,
+                "0"
+              )}.png`;
+              await new Promise((resolve, reject) => {
+                img.onload = () => {
+                  this.overlayPNGs.push(img);
                   resolve();
-                } catch (err) {
-                  console.error("Error starting video playback: ", err);
-                  reject(err);
-                }
-              };
-
-              this.overlayVideo.onerror = (err) => {
-                console.error("Error loading the overlay video: ", err);
-                reject(err);
-              };
-            });
+                };
+                img.onerror = (err) => reject(err);
+              });
+            }
+            this.currentFrameIndex = 0; // Ensure the index starts at the first frame
+            console.log("All PNGs successfully loaded for animation.");
           } catch (err) {
-            console.error("loadOverlayVideo method error: ", err);
+            console.error("loadOverlayPNGs method error: ", err);
           }
         }
 
         startProcessing() {
           const processFrame = async () => {
             await this.captureAndProcessFrame();
-            requestAnimationFrame(processFrame);
+            requestAnimationFrame(processFrame); // Ensures smooth frame rate
           };
-          requestAnimationFrame(processFrame);
+          requestAnimationFrame(processFrame); // Starts the loop
         }
 
         async processQueue() {
@@ -447,54 +438,47 @@
             if (!h.empty()) {
               console.log("Calculating homography and applying overlay.");
 
-              // Create a temporary canvas to extract the current frame from the video
+              // Create a temporary canvas to render the current PNG frame
               let tempCanvas = document.createElement("canvas");
               tempCanvas.width = this.canvas.width;
               tempCanvas.height = this.canvas.height;
               let tempContext = tempCanvas.getContext("2d");
 
-              // Draw the current frame of the video onto the temporary canvas
+              // Draw the current PNG frame onto the temporary canvas
               tempContext.drawImage(
-                this.overlayVideo,
+                this.overlayPNGs[this.currentFrameIndex], // Current PNG frame
                 0,
                 0,
                 tempCanvas.width,
                 tempCanvas.height
               );
-              console.log("Overlay video frame drawn on tempCanvas.");
+              console.log("Overlay PNG frame drawn on tempCanvas.");
 
-              // Read the video frame from the canvas into an OpenCV Mat
-              try {
-                let overlayMat = cv.imread(tempCanvas);
-                console.log(
-                  "Successfully read overlay frame from tempCanvas into OpenCV Mat."
-                );
+              // Read the current frame from the canvas into an OpenCV Mat
+              let overlayMat = cv.imread(tempCanvas);
 
-                let transformedOverlay = new cv.Mat();
-                cv.warpPerspective(
-                  overlayMat,
-                  transformedOverlay,
-                  h,
-                  new cv.Size(this.canvas.width, this.canvas.height)
-                );
+              let transformedOverlay = new cv.Mat();
+              cv.warpPerspective(
+                overlayMat,
+                transformedOverlay,
+                h,
+                new cv.Size(this.canvas.width, this.canvas.height)
+              );
 
-                let mask = new cv.Mat();
-                cv.cvtColor(transformedOverlay, mask, cv.COLOR_BGRA2GRAY);
-                cv.threshold(mask, mask, 1, 255, cv.THRESH_BINARY);
-                transformedOverlay.copyTo(frameData.srcMat, mask);
-                cv.imshow("outputCanvas", frameData.srcMat);
+              let mask = new cv.Mat();
+              cv.cvtColor(transformedOverlay, mask, cv.COLOR_BGRA2GRAY);
+              cv.threshold(mask, mask, 1, 255, cv.THRESH_BINARY);
+              transformedOverlay.copyTo(frameData.srcMat, mask);
+              cv.imshow("outputCanvas", frameData.srcMat);
 
-                // Cleanup
-                mask.delete();
-                transformedOverlay.delete();
-                overlayMat.delete(); // Always delete the Mat to prevent memory leaks
-              } catch (err) {
-                console.error(
-                  "Error reading tempCanvas or applying overlay: ",
-                  err
-                );
-                console.log("Likely CORS issue or tainted canvas.");
-              }
+              // Cleanup
+              mask.delete();
+              transformedOverlay.delete();
+              overlayMat.delete();
+
+              // Advance to the next PNG frame without affecting canvas frame rate
+              this.currentFrameIndex =
+                (this.currentFrameIndex + 1) % this.overlayPNGs.length;
             }
             h.delete();
           } catch (err) {
@@ -512,11 +496,11 @@
       window.onload = () => {
         try {
           const referenceSrc = "AR_lethal_weapon_marker_500_1000.png";
-          const overlaySrc = "AR_lethal_weapon_overlay_500_1000.webm";
+          const overlayPath = "PNG_animation"; // Folder containing the PNG frames
           const arFeatureMatcher = new ARFeatureMatcher(
             document.getElementById("outputCanvas"),
             referenceSrc,
-            overlaySrc, // Pass WebM video as the overlay
+            overlayPath, // Pass the folder path for PNGs
             true
           );
           arFeatureMatcher.initialize();
