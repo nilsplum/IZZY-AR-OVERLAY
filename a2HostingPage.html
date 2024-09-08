@@ -3,11 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <title>OpenCV Image Recognition</title>
-    <script
-      async
-      src="{{ 'AR_opencv.js' | asset_url }}"
-      type="text/javascript"
-    ></script>
+    <script async src="opencv.js" type="text/javascript"></script>
     <style></style>
   </head>
   <body>
@@ -515,10 +511,8 @@
       }
       window.onload = () => {
         try {
-          const referenceSrc =
-            "https://starlabs.life/IZZY/AR_lethal_weapon_marker_500_1000.png"; // Reference marker image
-          const overlaySrc =
-            "https://starlabs.life/IZZY/AR_lethal_weapon_overlay_500_1000.webm"; // Updated to video
+          const referenceSrc = "AR_lethal_weapon_marker_500_1000.png";
+          const overlaySrc = "AR_lethal_weapon_overlay_500_1000.webm";
           const arFeatureMatcher = new ARFeatureMatcher(
             document.getElementById("outputCanvas"),
             referenceSrc,
