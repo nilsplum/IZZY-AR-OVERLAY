@@ -132,16 +132,26 @@
             this.video.srcObject = stream;
 
             this.video.onloadedmetadata = () => {
-              this.canvas.width = this.video.videoWidth;
-              this.canvas.height = this.video.videoHeight;
+              // Get the aspect ratio of the video feed
+              const aspectRatio =
+                this.video.videoWidth / this.video.videoHeight;
+
+              // Set the canvas size while maintaining the aspect ratio
+              const desiredWidth = 640; // Set a desired width for the canvas
+              this.canvas.width = desiredWidth;
+              this.canvas.height = desiredWidth / aspectRatio;
+
               console.log(
                 `Camera initialized with dimensions: ${this.video.videoWidth}x${this.video.videoHeight}`
+              );
+              console.log(
+                `Canvas initialized with dimensions: ${this.canvas.width}x${this.canvas.height}`
               );
             };
 
             this.video.onerror = (error) => {
               console.error("Video error: ", error);
-              this.stopProcessing(); // Add logic to handle video errors
+              this.stopProcessing();
             };
 
             await this.video.play();
@@ -438,37 +448,49 @@
             if (!h.empty()) {
               console.log("Calculating homography and applying overlay.");
 
-              // Create a temporary canvas to render the current PNG frame
+              // Get the current overlay PNG frame
+              let currentOverlay = this.overlayPNGs[this.currentFrameIndex];
+
+              // Create a temporary canvas to draw the current overlay PNG frame
               let tempCanvas = document.createElement("canvas");
-              tempCanvas.width = this.canvas.width;
-              tempCanvas.height = this.canvas.height;
               let tempContext = tempCanvas.getContext("2d");
 
-              // Draw the current PNG frame onto the temporary canvas
+              // Set the temporary canvas size to match the original PNG size (retain aspect ratio)
+              tempCanvas.width = currentOverlay.width;
+              tempCanvas.height = currentOverlay.height;
+
+              // Draw the PNG frame onto the tempCanvas
               tempContext.drawImage(
-                this.overlayPNGs[this.currentFrameIndex], // Current PNG frame
+                currentOverlay,
                 0,
                 0,
                 tempCanvas.width,
                 tempCanvas.height
               );
-              console.log("Overlay PNG frame drawn on tempCanvas.");
 
-              // Read the current frame from the canvas into an OpenCV Mat
+              // Convert the tempCanvas to an OpenCV Mat for further processing
               let overlayMat = cv.imread(tempCanvas);
 
+              // Create a new Mat to store the transformed overlay
               let transformedOverlay = new cv.Mat();
+
+              // Warp the overlay using the homography transformation and fit to marker size
               cv.warpPerspective(
                 overlayMat,
                 transformedOverlay,
                 h,
-                new cv.Size(this.canvas.width, this.canvas.height)
+                new cv.Size(this.canvas.width, this.canvas.height) // Use canvas size to match the final display
               );
 
+              // Create a mask and apply the transformed overlay onto the source frame
               let mask = new cv.Mat();
               cv.cvtColor(transformedOverlay, mask, cv.COLOR_BGRA2GRAY);
               cv.threshold(mask, mask, 1, 255, cv.THRESH_BINARY);
+
+              // Copy the transformed overlay onto the frameData (original video frame)
               transformedOverlay.copyTo(frameData.srcMat, mask);
+
+              // Display the final result on the output canvas
               cv.imshow("outputCanvas", frameData.srcMat);
 
               // Cleanup
@@ -476,7 +498,7 @@
               transformedOverlay.delete();
               overlayMat.delete();
 
-              // Advance to the next PNG frame without affecting canvas frame rate
+              // Move to the next frame in the PNG sequence for the next iteration
               this.currentFrameIndex =
                 (this.currentFrameIndex + 1) % this.overlayPNGs.length;
             }
