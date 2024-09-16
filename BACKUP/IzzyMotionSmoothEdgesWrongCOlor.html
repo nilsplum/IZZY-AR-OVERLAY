@@ -459,6 +459,9 @@
               tempCanvas.width = currentOverlay.width;
               tempCanvas.height = currentOverlay.height;
 
+              // Clear the canvas to ensure it's transparent
+              tempContext.clearRect(0, 0, tempCanvas.width, tempCanvas.height);
+
               // Draw the PNG frame onto the tempCanvas
               tempContext.drawImage(
                 currentOverlay,
@@ -471,6 +474,9 @@
               // Convert the tempCanvas to an OpenCV Mat for further processing
               let overlayMat = cv.imread(tempCanvas);
 
+              // Ensure the color channels are in the correct order
+              cv.cvtColor(overlayMat, overlayMat, cv.COLOR_RGBA2BGRA);
+
               // Create a new Mat to store the transformed overlay
               let transformedOverlay = new cv.Mat();
 
@@ -482,19 +488,100 @@
                 new cv.Size(this.canvas.width, this.canvas.height) // Use canvas size to match the final display
               );
 
-              // Create a mask and apply the transformed overlay onto the source frame
-              let mask = new cv.Mat();
-              cv.cvtColor(transformedOverlay, mask, cv.COLOR_BGRA2GRAY);
-              cv.threshold(mask, mask, 1, 255, cv.THRESH_BINARY);
+              // Split the transformed overlay image into its channels
+              let rgbaChannels = new cv.MatVector();
+              cv.split(transformedOverlay, rgbaChannels);
 
-              // Copy the transformed overlay onto the frameData (original video frame)
-              transformedOverlay.copyTo(frameData.srcMat, mask);
+              // Extract the alpha channel and normalize it to [0, 1]
+              let alpha = new cv.Mat();
+              rgbaChannels.get(3).convertTo(alpha, cv.CV_32FC1, 1.0 / 255);
+
+              // Create inverse alpha (1 - alpha) without using cv.ones
+              let inverseAlpha = new cv.Mat(
+                alpha.rows,
+                alpha.cols,
+                cv.CV_32FC1
+              );
+              inverseAlpha.setTo(new cv.Scalar(1.0));
+              cv.subtract(inverseAlpha, alpha, inverseAlpha);
+
+              // Convert the B, G, R channels of the overlay to CV_32FC1
+              let overlayChannels = new cv.MatVector();
+              for (let i = 0; i < 3; i++) {
+                let channel = new cv.Mat();
+                rgbaChannels.get(i).convertTo(channel, cv.CV_32FC1); // Convert to float for multiplication
+                overlayChannels.push_back(channel);
+              }
+
+              // Split the frameData.srcMat (video frame) into B, G, R channels
+              let backgroundChannels = new cv.MatVector();
+              cv.split(frameData.srcMat, backgroundChannels);
+
+              // Convert background channels to CV_32FC1
+              for (let i = 0; i < 3; i++) {
+                let channel = new cv.Mat();
+                backgroundChannels.get(i).convertTo(channel, cv.CV_32FC1); // Convert to float for multiplication
+                backgroundChannels.set(i, channel);
+              }
+
+              // Perform alpha blending for each channel
+              let blendedChannels = new cv.MatVector();
+              for (let i = 0; i < 3; i++) {
+                let blendedOverlay = new cv.Mat();
+                let blendedBackground = new cv.Mat();
+                let blendedChannel = new cv.Mat();
+
+                // Multiply overlay channel by alpha
+                cv.multiply(overlayChannels.get(i), alpha, blendedOverlay);
+
+                // Multiply background channel by inverse alpha
+                cv.multiply(
+                  backgroundChannels.get(i),
+                  inverseAlpha,
+                  blendedBackground
+                );
+
+                // Add the two results to get the blended channel
+                cv.add(blendedOverlay, blendedBackground, blendedChannel);
+
+                blendedChannels.push_back(blendedChannel);
+
+                // Clean up temporary Mats
+                blendedOverlay.delete();
+                blendedBackground.delete();
+              }
+
+              // Merge blended channels into a single image
+              let blendedImage = new cv.Mat();
+              cv.merge(blendedChannels, blendedImage);
+
+              // Convert blendedImage to CV_8UC3 (standard 8-bit image)
+              blendedImage.convertTo(blendedImage, cv.CV_8UC3);
+
+              // Replace frameData.srcMat with blendedImage
+              blendedImage.copyTo(frameData.srcMat);
 
               // Display the final result on the output canvas
               cv.imshow("outputCanvas", frameData.srcMat);
 
               // Cleanup
-              mask.delete();
+              alpha.delete();
+              inverseAlpha.delete();
+              for (let i = 0; i < rgbaChannels.size(); i++) {
+                rgbaChannels.get(i).delete();
+              }
+              rgbaChannels.delete();
+
+              for (let i = 0; i < 3; i++) {
+                overlayChannels.get(i).delete();
+                backgroundChannels.get(i).delete();
+                blendedChannels.get(i).delete();
+              }
+              overlayChannels.delete();
+              backgroundChannels.delete();
+              blendedChannels.delete();
+
+              blendedImage.delete();
               transformedOverlay.delete();
               overlayMat.delete();
 
