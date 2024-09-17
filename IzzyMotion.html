@@ -4,26 +4,49 @@
     <meta charset="UTF-8" />
     <title>OpenCV Image Recognition</title>
     <script async src="opencv.js" type="text/javascript"></script>
-    <style></style>
+    <style>
+      canvas {
+        box-sizing: border-box;
+      }
+    </style>
   </head>
   <body>
-    <canvas
-      id="outputCanvas"
-      width="640"
-      height="480"
-      background="black"
-    ></canvas>
+    <canvas id="outputCanvas" background="black"></canvas>
     <script>
       class FrameData {
-        constructor(imageData) {
-          this.imageData = imageData;
-          this.srcMat = cv.matFromImageData(imageData);
-          this.grayMat = new cv.Mat();
-          cv.cvtColor(this.srcMat, this.grayMat, cv.COLOR_BGRA2GRAY);
+        constructor(width, height) {
+          // Initialize reusable Mats for downscaled processing resolution
+          this.srcMat = new cv.Mat(height, width, cv.CV_8UC4);
+          this.grayMat = new cv.Mat(height, width, cv.CV_8UC1);
           this.keypoints = new cv.KeyPointVector();
           this.descriptors = new cv.Mat();
           this.goodMatches = new cv.DMatchVector();
           this.transformationMatrix = null;
+        }
+
+        update(imageData) {
+          // Update srcMat with new image data
+          this.srcMat.data.set(imageData.data);
+
+          // Convert to grayscale
+          cv.cvtColor(this.srcMat, this.grayMat, cv.COLOR_BGRA2GRAY);
+
+          // Reinitialize keypoints and descriptors
+          this.keypoints = new cv.KeyPointVector();
+          this.descriptors.delete();
+          this.descriptors = new cv.Mat();
+
+          // Clear good matches by reinitializing
+          this.goodMatches = new cv.DMatchVector();
+        }
+
+        // Method to clean up Mats when no longer needed
+        delete() {
+          this.srcMat.delete();
+          this.grayMat.delete();
+          this.keypoints.delete();
+          this.descriptors.delete();
+          this.goodMatches.delete();
         }
       }
 
@@ -37,14 +60,26 @@
           this.canvas = canvas;
           this.context = canvas.getContext("2d", { willReadFrequently: true });
           this.referenceImageUrl = referenceImageUrl;
-          this.overlayImagePath = overlayImagePath; // Changed to reflect PNG path
+          this.overlayImagePath = overlayImagePath;
           this.isOpenCVInitialized = false;
           this.showMatching = showMatching;
-          this.frameQueue = [];
           this.processing = false;
           this.imageCapture = null;
-          this.overlayPNGs = []; // To store the preloaded PNGs
-          this.currentFrameIndex = 0; // To track which PNG to display
+          this.overlayPNGs = [];
+          this.currentFrameIndex = 0;
+
+          this.frameData = null;
+
+          // Off-screen canvas for processing with lower resolution
+          this.processingCanvas = document.createElement("canvas");
+          this.processingContext = this.processingCanvas.getContext("2d", {
+            willReadFrequently: true,
+          });
+
+          this.transformedCanvas = document.createElement("canvas");
+          this.transformedContext = this.transformedCanvas.getContext("2d", {
+            willReadFrequently: true,
+          });
         }
 
         async initialize() {
@@ -57,7 +92,7 @@
             console.log("Camera Initialized");
             await this.loadReferenceImage(this.referenceImageUrl);
             console.log("Reference Image Loaded");
-            await this.loadOverlayPNGs(); // Replacing video loading with PNG sequence loading
+            await this.loadOverlayPNGs();
             console.log("Overlay PNGs Loaded");
             this.startProcessing();
             console.log("Started Processing");
@@ -75,50 +110,36 @@
                 return;
               }
 
-              // Check if OpenCV is already initialized
               if (cv["onRuntimeInitialized"]) {
-                alert("OpenCV.js already loaded");
                 this.isOpenCVInitialized = true;
                 resolve();
               } else {
-                // Set up the callback for when OpenCV initializes
                 cv["onRuntimeInitialized"] = () => {
-                  alert("OpenCV.js successfully loaded");
                   this.isOpenCVInitialized = true;
                   resolve();
                 };
 
-                // In case the script is already loaded but `onRuntimeInitialized` has already fired
                 if (cv.Mat) {
-                  alert("OpenCV.js already initialized (fallback)");
                   this.isOpenCVInitialized = true;
                   resolve();
                 }
               }
             } catch (err) {
-              alert("initializeOpenCV inner error: " + err);
               console.error("initializeOpenCV inner error: ", err);
               reject(err);
             }
-          }).catch((err) => {
-            alert("initializeOpenCV outer error: " + err);
-            console.error("initializeOpenCV outer error: ", err);
           });
         }
 
         async setupCVDependentProperties() {
-          try {
-            if (this.isOpenCVInitialized) {
-              this.featureDetector = new cv.AKAZE();
-              this.featureDetector.setThreshold(0.001);
-              this.matcher = new cv.BFMatcher();
-            } else {
-              console.error(
-                "setupCVDependentProperties error: OpenCV not initialized."
-              );
-            }
-          } catch (err) {
-            console.error("setupCVDependentProperties error: ", err);
+          if (this.isOpenCVInitialized) {
+            this.featureDetector = new cv.AKAZE();
+            this.featureDetector.setThreshold(0.0005);
+            this.matcher = new cv.BFMatcher();
+          } else {
+            console.error(
+              "setupCVDependentProperties error: OpenCV not initialized."
+            );
           }
         }
 
@@ -137,21 +158,27 @@
             this.video.srcObject = stream;
 
             this.video.onloadedmetadata = () => {
-              // Get the aspect ratio of the video feed
               const aspectRatio =
                 this.video.videoWidth / this.video.videoHeight;
+              const desiredWidth = window.innerWidth;
 
-              // Set the canvas size while maintaining the aspect ratio
-              const desiredWidth = 640; // Set a desired width for the canvas
+              // Adjust main visible canvas size
               this.canvas.width = desiredWidth;
               this.canvas.height = desiredWidth / aspectRatio;
 
-              console.log(
-                `Camera initialized with dimensions: ${this.video.videoWidth}x${this.video.videoHeight}`
+              // Off-screen canvas processing at lower resolution for performance
+              const scaleFactor = 0.5; // Adjust this scale factor based on performance requirements
+              this.processingCanvas.width = this.canvas.width * scaleFactor;
+              this.processingCanvas.height = this.canvas.height * scaleFactor;
+
+              this.frameData = new FrameData(
+                this.processingCanvas.width,
+                this.processingCanvas.height
               );
-              console.log(
-                `Canvas initialized with dimensions: ${this.canvas.width}x${this.canvas.height}`
-              );
+
+              // Set the size of the transformedCanvas for final overlay rendering
+              this.transformedCanvas.width = this.canvas.width;
+              this.transformedCanvas.height = this.canvas.height;
             };
 
             this.video.onerror = (error) => {
@@ -166,250 +193,103 @@
         }
 
         async loadReferenceImage(url) {
-          try {
-            console.log("Loading reference image from URL: ", url);
+          let img = new Image();
+          img.crossOrigin = "anonymous";
+          img.src = url;
 
-            let img = new Image();
-            img.crossOrigin = "anonymous"; // Ensure this is set before src
-
-            img.src = url;
-            console.log("CrossOrigin set, and image source assigned.");
-
-            await new Promise((resolve, reject) => {
-              img.onload = () => {
-                try {
-                  let tempMat = cv.imread(img);
-                  console.log("Image successfully read into OpenCV.");
-
-                  cv.cvtColor(tempMat, tempMat, cv.COLOR_BGRA2GRAY);
-                  this.referenceMat = tempMat;
-                  this.referenceKeypoints = new cv.KeyPointVector();
-                  this.referenceDescriptors = new cv.Mat();
-
-                  this.featureDetector.detectAndCompute(
-                    tempMat,
-                    new cv.Mat(),
-                    this.referenceKeypoints,
-                    this.referenceDescriptors
-                  );
-                  if (this.referenceDescriptors.empty()) {
-                    console.warn(
-                      "Reference descriptors are empty after initialization."
-                    );
-                  } else {
-                    console.log("Features detected successfully.");
-                  }
-                  resolve();
-                } catch (err) {
-                  console.error(
-                    "Error processing reference image in OpenCV: ",
-                    err
-                  );
-                  reject(err);
-                }
-              };
-
-              img.onerror = (err) => {
-                console.error("Error loading reference image: ", err);
-                reject(err);
-              };
-            });
-          } catch (err) {
-            console.error("loadReferenceImage method error: ", err);
-          }
+          await new Promise((resolve, reject) => {
+            img.onload = () => {
+              let tempMat = cv.imread(img);
+              cv.cvtColor(tempMat, tempMat, cv.COLOR_BGRA2GRAY);
+              this.referenceMat = tempMat;
+              this.referenceKeypoints = new cv.KeyPointVector();
+              this.referenceDescriptors = new cv.Mat();
+              this.featureDetector.detectAndCompute(
+                tempMat,
+                new cv.Mat(),
+                this.referenceKeypoints,
+                this.referenceDescriptors
+              );
+              resolve();
+            };
+            img.onerror = reject;
+          });
         }
 
         async loadOverlayPNGs() {
-          try {
-            console.log("Loading overlay PNG sequence");
+          const numFrames = 5;
+          for (let i = 1; i <= numFrames; i++) {
+            let img = new Image();
+            img.crossOrigin = "anonymous";
+            img.src = `${this.overlayImagePath}/PNG_${String(i).padStart(
+              4,
+              "0"
+            )}.png`;
 
-            let numFrames = 10; // Example: total number of PNG frames
-            for (let i = 1; i <= numFrames; i++) {
-              let img = new Image();
-              img.src = `${this.overlayImagePath}/PNG_${String(i).padStart(
-                4,
-                "0"
-              )}.png`;
-              await new Promise((resolve, reject) => {
-                img.onload = () => {
-                  this.overlayPNGs.push(img);
-                  resolve();
-                };
-                img.onerror = (err) => reject(err);
-              });
-            }
-            this.currentFrameIndex = 0; // Ensure the index starts at the first frame
-            console.log("All PNGs successfully loaded for animation.");
-          } catch (err) {
-            console.error("loadOverlayPNGs method error: ", err);
+            await new Promise((resolve, reject) => {
+              img.onload = () => {
+                let canvas = document.createElement("canvas");
+                canvas.width = img.width;
+                canvas.height = img.height;
+                let context = canvas.getContext("2d", {
+                  willReadFrequently: true,
+                });
+
+                context.drawImage(img, 0, 0);
+                let mat = cv.imread(canvas);
+                this.overlayPNGs.push(mat);
+                resolve();
+              };
+              img.onerror = reject;
+            });
           }
+          this.currentFrameIndex = 0;
         }
 
         startProcessing() {
           const processFrame = async () => {
             await this.captureAndProcessFrame();
-            requestAnimationFrame(processFrame); // Ensures smooth frame rate
+            requestAnimationFrame(processFrame);
           };
-          requestAnimationFrame(processFrame); // Starts the loop
+          requestAnimationFrame(processFrame);
         }
 
-        async processQueue() {
-          try {
-            while (this.frameQueue.length > 0) {
-              const frameData = this.frameQueue.shift();
-              await this.detectFeaturesAndMatch(frameData);
-              if (this.showMatching) {
-                //this.visualizeMatches(frameData);
-              }
-              if (frameData.goodMatches.size() > 0) {
-                this.calculateTransformationAndOverlay(frameData);
-              }
-            }
-          } catch (err) {
-            console.error("processQueue: ", err);
+        captureAndProcessFrame() {
+          if (this.processing) return;
+          this.processing = true;
+
+          // Draw video frame onto the processing canvas at a reduced resolution
+          this.processingContext.drawImage(
+            this.video,
+            0,
+            0,
+            this.processingCanvas.width,
+            this.processingCanvas.height
+          );
+
+          // Get image data from the processing canvas
+          let imageData = this.processingContext.getImageData(
+            0,
+            0,
+            this.processingCanvas.width,
+            this.processingCanvas.height
+          );
+
+          // Update frameData with the new image
+          this.frameData.update(imageData);
+
+          // Detect features and match
+          this.detectFeaturesAndMatch(this.frameData);
+
+          if (this.frameData.goodMatches.size() > 0) {
+            this.calculateTransformationAndOverlay(this.frameData);
           }
-        }
 
-        /*visualizeMatches(frameData) {
-          try {
-            let imgMatches = new cv.Mat();
-            cv.drawMatches(
-              frameData.srcMat,
-              frameData.keypoints,
-              this.referenceMat,
-              this.referenceKeypoints,
-              frameData.goodMatches,
-              imgMatches
-            );
-            cv.imshow("outputCanvas", imgMatches);
-            imgMatches.delete();
-          } catch (err) {
-            console.error("visualizeMatches error: ", err);
-          }
-        }*/
-
-        filterMatches(matches, distanceThreshold = 0.9) {
-          try {
-            let goodMatches = new cv.DMatchVector();
-            for (let i = 0; i < matches.size(); ++i) {
-              let match = matches.get(i);
-              let dMatch1 = match.get(0);
-              let dMatch2 = match.get(1);
-              if (
-                dMatch1.distance <=
-                dMatch2.distance * parseFloat(distanceThreshold)
-              ) {
-                goodMatches.push_back(dMatch1);
-              }
-            }
-            return goodMatches;
-          } catch (err) {
-            console.error("filterMatches error: ", err);
-          }
-        }
-
-        calculateTransformationAndOverlay(frameData) {
-          try {
-            if (frameData.goodMatches.size() < 5) {
-              console.warn(
-                "Not enough matches to calculate a robust homography."
-              );
-              return;
-            }
-
-            //console.log("Good matches count:", frameData.goodMatches.size());
-
-            let points1 = [];
-            let points2 = [];
-
-            for (let i = 0; i < frameData.goodMatches.size(); i++) {
-              let match = frameData.goodMatches.get(i);
-              if (
-                match.queryIdx >= frameData.keypoints.size() ||
-                match.trainIdx >= this.referenceKeypoints.size()
-              ) {
-                continue;
-              }
-
-              points2.push(frameData.keypoints.get(match.queryIdx).pt.x);
-              points2.push(frameData.keypoints.get(match.queryIdx).pt.y);
-              points1.push(this.referenceKeypoints.get(match.trainIdx).pt.x);
-              points1.push(this.referenceKeypoints.get(match.trainIdx).pt.y);
-            }
-
-            if (points1.length < 8 || points2.length < 8) {
-              console.warn("Not enough valid matches to calculate homography.");
-              return;
-            }
-
-            let mat1 = new cv.Mat(points1.length / 2, 1, cv.CV_32FC2);
-            mat1.data32F.set(points1);
-
-            let mat2 = new cv.Mat(points2.length / 2, 1, cv.CV_32FC2);
-            mat2.data32F.set(points2);
-
-            //console.log("Matrices created for homography calculation.");
-
-            let h = cv.findHomography(mat1, mat2, cv.RANSAC);
-
-            if (h.empty()) {
-              console.error("Homography matrix is empty");
-              mat1.delete();
-              mat2.delete();
-              return;
-            }
-
-            this.applyOverlay(h, frameData);
-            mat1.delete();
-            mat2.delete();
-          } catch (err) {
-            console.error("calculateTransformationAndOverlay error: ", err);
-          }
-        }
-
-        async captureAndProcessFrame() {
-          try {
-            if (this.processing) return;
-            this.processing = true;
-
-            this.context.drawImage(
-              this.video,
-              0,
-              0,
-              this.canvas.width,
-              this.canvas.height
-            );
-
-            let imageData = this.context.getImageData(
-              0,
-              0,
-              this.canvas.width,
-              this.canvas.height
-            );
-            let frameData = new FrameData(imageData);
-
-            try {
-              this.frameQueue.push(frameData);
-              await this.processQueue();
-            } finally {
-              frameData.srcMat.delete();
-              frameData.grayMat.delete();
-              frameData.keypoints.delete();
-              frameData.descriptors.delete();
-            }
-
-            this.processing = false;
-          } catch (err) {
-            console.error("captureAndProcessFrame error: ", err);
-            this.processing = false;
-          }
+          this.processing = false;
         }
 
         async detectFeaturesAndMatch(frameData) {
           if (!this.isOpenCVInitialized) {
-            console.warn(
-              "detectFeaturesAndMatch error: Initialization incomplete."
-            );
             return;
           }
           try {
@@ -424,125 +304,111 @@
               !frameData.descriptors.empty()
             ) {
               let matches = new cv.DMatchVectorVector();
-              if (this.matcher) {
-                this.matcher.knnMatch(
-                  frameData.descriptors,
-                  this.referenceDescriptors,
-                  matches,
-                  2
-                );
-                let goodMatches = this.filterMatches(matches);
-                frameData.goodMatches = goodMatches;
-              } else {
-                console.warn(
-                  "detectFeaturesAndMatch error: Matcher not initialized."
-                );
-              }
-            } else {
-              console.warn(
-                "detectFeaturesAndMatch error: Descriptors are empty."
+              this.matcher.knnMatch(
+                frameData.descriptors,
+                this.referenceDescriptors,
+                matches,
+                2
               );
+              let goodMatches = this.filterMatches(matches);
+              frameData.goodMatches = goodMatches;
             }
           } catch (err) {
             console.error("detectFeaturesAndMatch error: ", err);
           }
         }
 
-        applyOverlay(h, frameData) {
-          try {
-            if (!h.empty()) {
-              console.log("Calculating homography and applying overlay.");
-
-              // Get the current overlay PNG frame
-              let currentOverlay = this.overlayPNGs[this.currentFrameIndex];
-
-              // Create a temporary canvas to draw the current overlay PNG frame
-              let tempCanvas = document.createElement("canvas");
-              let tempContext = tempCanvas.getContext("2d");
-
-              // Set the temporary canvas size to match the original PNG size
-              tempCanvas.width = currentOverlay.width;
-              tempCanvas.height = currentOverlay.height;
-
-              // Draw the PNG frame onto the tempCanvas
-              tempContext.drawImage(
-                currentOverlay,
-                0,
-                0,
-                tempCanvas.width,
-                tempCanvas.height
-              );
-
-              // Convert the tempCanvas to an OpenCV Mat for further processing
-              let overlayMat = cv.imread(tempCanvas);
-
-              // Create a new Mat to store the transformed overlay
-              let transformedOverlay = new cv.Mat();
-
-              // Warp the overlay using the homography transformation
-              cv.warpPerspective(
-                overlayMat,
-                transformedOverlay,
-                h,
-                new cv.Size(this.canvas.width, this.canvas.height) // Match canvas size
-              );
-
-              // Convert the transformed overlay back to canvas for blending
-              let transformedCanvas = document.createElement("canvas");
-              transformedCanvas.width = this.canvas.width;
-              transformedCanvas.height = this.canvas.height;
-              let transformedCtx = transformedCanvas.getContext("2d");
-
-              // Draw the transformed overlay on the transformed canvas
-              cv.imshow(transformedCanvas, transformedOverlay);
-
-              // Draw the video frame first
-              this.context.drawImage(
-                this.video,
-                0,
-                0,
-                this.canvas.width,
-                this.canvas.height
-              );
-
-              // Now, draw the transformed overlay with transparency blending
-              this.context.drawImage(
-                transformedCanvas,
-                0,
-                0,
-                this.canvas.width,
-                this.canvas.height
-              );
-
-              // Cleanup
-              transformedOverlay.delete();
-              overlayMat.delete();
-
-              // Move to the next frame in the PNG sequence for the next iteration
-              this.currentFrameIndex =
-                (this.currentFrameIndex + 1) % this.overlayPNGs.length;
+        filterMatches(matches, distanceThreshold = 0.9) {
+          let goodMatches = new cv.DMatchVector();
+          for (let i = 0; i < matches.size(); ++i) {
+            let match = matches.get(i);
+            let dMatch1 = match.get(0);
+            let dMatch2 = match.get(1);
+            if (dMatch1.distance <= dMatch2.distance * distanceThreshold) {
+              goodMatches.push_back(dMatch1);
             }
-            h.delete();
-          } catch (err) {
-            console.error("applyOverlay method error: ", err);
           }
+          return goodMatches;
+        }
+
+        calculateTransformationAndOverlay(frameData) {
+          if (frameData.goodMatches.size() < 5) return;
+
+          let points1 = [];
+          let points2 = [];
+
+          for (let i = 0; i < frameData.goodMatches.size(); i++) {
+            let match = frameData.goodMatches.get(i);
+            points2.push(frameData.keypoints.get(match.queryIdx).pt.x);
+            points2.push(frameData.keypoints.get(match.queryIdx).pt.y);
+            points1.push(this.referenceKeypoints.get(match.trainIdx).pt.x);
+            points1.push(this.referenceKeypoints.get(match.trainIdx).pt.y);
+          }
+
+          let mat1 = new cv.Mat(points1.length / 2, 1, cv.CV_32FC2);
+          mat1.data32F.set(points1);
+          let mat2 = new cv.Mat(points2.length / 2, 1, cv.CV_32FC2);
+          mat2.data32F.set(points2);
+
+          let h = cv.findHomography(mat1, mat2, cv.RANSAC);
+          if (!h.empty()) {
+            this.applyOverlay(h, frameData);
+          }
+          mat1.delete();
+          mat2.delete();
+          h.delete();
+        }
+
+        applyOverlay(h, frameData) {
+          if (h.empty()) return;
+
+          let currentOverlayMat = this.overlayPNGs[this.currentFrameIndex];
+
+          let transformedOverlay = new cv.Mat();
+          cv.warpPerspective(
+            currentOverlayMat,
+            transformedOverlay,
+            h,
+            new cv.Size(
+              this.processingCanvas.width,
+              this.processingCanvas.height
+            )
+          );
+
+          cv.imshow(this.transformedCanvas, transformedOverlay);
+
+          // Draw the video frame first on the main canvas
+          this.context.drawImage(
+            this.video,
+            0,
+            0,
+            this.canvas.width,
+            this.canvas.height
+          );
+
+          // Now, draw the transformed overlay with transparency blending on the main canvas
+          this.context.drawImage(
+            this.transformedCanvas,
+            0,
+            0,
+            this.canvas.width,
+            this.canvas.height
+          );
+
+          transformedOverlay.delete();
+          this.currentFrameIndex =
+            (this.currentFrameIndex + 1) % this.overlayPNGs.length;
         }
       }
 
-      function getQueryParams() {
-        const params = new URLSearchParams(window.location.search);
-        return {
-          imageBaseName: params.get("image") || "default",
-        };
-      }
       window.onload = () => {
         try {
-          const referenceSrc = "AR_lethal_weapon_marker_500_1000.png";
-          const overlayPath = "PNG_animation"; // Folder containing the PNG frames
+          const referenceSrc = "AR_lethal_weapon_marker.png";
+          const overlayPath = "PNG_animation";
           const arFeatureMatcher = new ARFeatureMatcher(
             document.getElementById("outputCanvas"),
             referenceSrc,
-            overlayPath, // Pass the folder path for PNGs
+            overlayPath,
             true
           );
           arFeatureMatcher.initialize();
