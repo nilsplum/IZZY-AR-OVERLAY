@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>OpenCV Image Recognition with Color Layers</title>
+  <script async src="opencv.js" type="text/javascript"></script>
+  <style>
+    canvas {
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="outputCanvas" background="black"></canvas>
+  <script>
+    class FrameData {
+      constructor(width, height) {
+        // Initialize reusable Mats for downscaled processing resolution
+        this.srcMat = new cv.Mat(height, width, cv.CV_8UC4);
+
+        // Mats for each layer
+        this.layerMats = {}; // 'grayscale', 'red', 'green', 'blue'
+
+        // Keypoints, descriptors, and good matches for each layer
+        this.layerKeypoints = {};
+        this.layerDescriptors = {};
+        this.layerGoodMatches = {};
+        this.layerHomographies = {};
+
+        this.transformationMatrix = null;
+      }
+
+      update(imageData) {
+        try {
+          // Update srcMat with new image data
+          this.srcMat.data.set(imageData.data);
+
+          // Convert to grayscale
+          let grayMat = new cv.Mat();
+          cv.cvtColor(this.srcMat, grayMat, cv.COLOR_BGRA2GRAY);
+          this.layerMats['grayscale'] = grayMat;
+
+          // Split color channels
+          let rgbaPlanes = new cv.MatVector();
+          cv.split(this.srcMat, rgbaPlanes);
+          this.layerMats['blue'] = rgbaPlanes.get(0);
+          this.layerMats['green'] = rgbaPlanes.get(1);
+          this.layerMats['red'] = rgbaPlanes.get(2);
+
+          // Initialize keypoints, descriptors, and good matches for each layer
+          for (let layer in this.layerMats) {
+            this.layerKeypoints[layer] = new cv.KeyPointVector();
+            if (this.layerDescriptors[layer]) {
+              this.layerDescriptors[layer].delete();
+            }
+            this.layerDescriptors[layer] = new cv.Mat();
+            this.layerGoodMatches[layer] = new cv.DMatchVector();
+            this.layerHomographies[layer] = null;
+          }
+
+          // Clean up
+          rgbaPlanes.delete();
+        } catch (err) {
+          console.error("FrameData update error:", err);
+        }
+      }
+
+      // Method to clean up Mats when no longer needed
+      delete() {
+        this.srcMat.delete();
+        for (let layer in this.layerMats) {
+          this.layerMats[layer].delete();
+          this.layerKeypoints[layer].delete();
+          this.layerDescriptors[layer].delete();
+          this.layerGoodMatches[layer].delete();
+        }
+      }
+    }
+
+    class ARFeatureMatcher {
+      constructor(
+        canvas,
+        referenceImageUrl,
+        overlayImagePath,
+        showMatching = false
+      ) {
+        this.canvas = canvas;
+        this.context = canvas.getContext("2d", { willReadFrequently: true });
+        this.referenceImageUrl = referenceImageUrl;
+        this.overlayImagePath = overlayImagePath;
+        this.isOpenCVInitialized = false;
+        this.showMatching = showMatching;
+        this.processing = false;
+        this.imageCapture = null;
+        this.overlayPNGs = [];
+        this.currentFrameIndex = 0;
+
+        this.frameData = null;
+
+        // Off-screen canvas for processing with lower resolution
+        this.processingCanvas = document.createElement("canvas");
+        this.processingContext = this.processingCanvas.getContext("2d", {
+          willReadFrequently: true,
+        });
+
+        this.transformedCanvas = document.createElement("canvas");
+        this.transformedContext = this.transformedCanvas.getContext("2d", {
+          willReadFrequently: true,
+        });
+      }
+
+      async initialize() {
+        try {
+          await this.initializeOpenCV();
+          console.log("OpenCV Initialized");
+          await this.setupCVDependentProperties();
+          console.log("OpenCV Properties Initialized");
+          await this.initializeCamera();
+          console.log("Camera Initialized");
+          await this.loadReferenceImage(this.referenceImageUrl);
+          console.log("Reference Image Loaded");
+          await this.loadOverlayPNGs();
+          console.log("Overlay PNGs Loaded");
+          this.startProcessing();
+          console.log("Started Processing");
+        } catch (err) {
+          console.error("Initialization error: ", err);
+        }
+      }
+
+      initializeOpenCV() {
+        return new Promise((resolve, reject) => {
+          try {
+            if (typeof cv === "undefined") {
+              alert("OpenCV.js not loaded");
+              reject("OpenCV.js not loaded");
+              return;
+            }
+
+            if (cv["onRuntimeInitialized"]) {
+              this.isOpenCVInitialized = true;
+              resolve();
+            } else {
+              cv["onRuntimeInitialized"] = () => {
+                this.isOpenCVInitialized = true;
+                resolve();
+              };
+
+              if (cv.Mat) {
+                this.isOpenCVInitialized = true;
+                resolve();
+              }
+            }
+          } catch (err) {
+            console.error("initializeOpenCV inner error: ", err);
+            reject(err);
+          }
+        });
+      }
+
+      async setupCVDependentProperties() {
+        if (this.isOpenCVInitialized) {
+          this.featureDetector = new cv.AKAZE();
+          this.featureDetector.setThreshold(0.0005);
+          this.matcher = new cv.BFMatcher();
+        } else {
+          console.error(
+            "setupCVDependentProperties error: OpenCV not initialized."
+          );
+        }
+      }
+
+      async initializeCamera() {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "environment" },
+          });
+
+          this.video = document.createElement("video");
+          this.video.setAttribute("playsinline", "true");
+          this.video.muted = true;
+          this.video.style.display = "none";
+          document.body.appendChild(this.video);
+
+          this.video.srcObject = stream;
+
+          this.video.onloadedmetadata = () => {
+            const aspectRatio =
+              this.video.videoWidth / this.video.videoHeight;
+            const desiredWidth = window.innerWidth;
+
+            // Adjust main visible canvas size
+            this.canvas.width = desiredWidth;
+            this.canvas.height = desiredWidth / aspectRatio;
+
+            // Off-screen canvas processing at lower resolution for performance
+            const scaleFactor = 0.5; // Adjust this scale factor based on performance requirements
+            this.processingCanvas.width = this.canvas.width * scaleFactor;
+            this.processingCanvas.height = this.canvas.height * scaleFactor;
+
+            this.frameData = new FrameData(
+              this.processingCanvas.width,
+              this.processingCanvas.height
+            );
+
+            // Set the size of the transformedCanvas for final overlay rendering
+            this.transformedCanvas.width = this.canvas.width;
+            this.transformedCanvas.height = this.canvas.height;
+          };
+
+          this.video.onerror = (error) => {
+            console.error("Video error: ", error);
+            this.stopProcessing();
+          };
+
+          await this.video.play();
+        } catch (err) {
+          console.error("initializeCamera error: ", err);
+        }
+      }
+
+      async loadReferenceImage(url) {
+        try {
+          let img = new Image();
+          img.crossOrigin = "anonymous";
+          img.src = url;
+
+          await new Promise((resolve, reject) => {
+            img.onload = () => {
+              try {
+                let tempMat = cv.imread(img);
+
+                // Store Mats for each layer
+                this.referenceMats = {};
+
+                // Convert to grayscale
+                let grayMat = new cv.Mat();
+                cv.cvtColor(tempMat, grayMat, cv.COLOR_BGRA2GRAY);
+                this.referenceMats['grayscale'] = grayMat;
+
+                // Split color channels
+                let rgbaPlanes = new cv.MatVector();
+                cv.split(tempMat, rgbaPlanes);
+                this.referenceMats['blue'] = rgbaPlanes.get(0);
+                this.referenceMats['green'] = rgbaPlanes.get(1);
+                this.referenceMats['red'] = rgbaPlanes.get(2);
+
+                // Initialize keypoints and descriptors for each layer
+                this.referenceKeypoints = {};
+                this.referenceDescriptors = {};
+
+                for (let layer in this.referenceMats) {
+                  this.referenceKeypoints[layer] = new cv.KeyPointVector();
+                  this.referenceDescriptors[layer] = new cv.Mat();
+                  this.featureDetector.detectAndCompute(
+                    this.referenceMats[layer],
+                    new cv.Mat(),
+                    this.referenceKeypoints[layer],
+                    this.referenceDescriptors[layer]
+                  );
+                }
+
+                // Clean up
+                rgbaPlanes.delete();
+                tempMat.delete();
+
+                resolve();
+              } catch (err) {
+                console.error("loadReferenceImage processing error:", err);
+                reject(err);
+              }
+            };
+            img.onerror = (err) => {
+              console.error("loadReferenceImage image load error:", err);
+              reject(err);
+            };
+          });
+        } catch (err) {
+          console.error("loadReferenceImage error:", err);
+        }
+      }
+
+      async loadOverlayPNGs() {
+        try {
+          const numFrames = 5;
+          for (let i = 1; i <= numFrames; i++) {
+            let img = new Image();
+            img.crossOrigin = "anonymous";
+            img.src = `${this.overlayImagePath}/PNG_${String(i).padStart(
+              4,
+              "0"
+            )}.png`;
+
+            await new Promise((resolve, reject) => {
+              img.onload = () => {
+                try {
+                  let canvas = document.createElement("canvas");
+                  canvas.width = img.width;
+                  canvas.height = img.height;
+                  let context = canvas.getContext("2d", {
+                    willReadFrequently: true,
+                  });
+
+                  context.drawImage(img, 0, 0);
+                  let mat = cv.imread(canvas);
+                  this.overlayPNGs.push(mat);
+                  resolve();
+                } catch (err) {
+                  console.error("loadOverlayPNGs processing error:", err);
+                  reject(err);
+                }
+              };
+              img.onerror = (err) => {
+                console.error("loadOverlayPNGs image load error:", err);
+                reject(err);
+              };
+            });
+          }
+          this.currentFrameIndex = 0;
+        } catch (err) {
+          console.error("loadOverlayPNGs error:", err);
+        }
+      }
+
+      startProcessing() {
+        const processFrame = async () => {
+          try {
+            await this.captureAndProcessFrame();
+          } catch (err) {
+            console.error("processFrame error:", err);
+          }
+          requestAnimationFrame(processFrame);
+        };
+        requestAnimationFrame(processFrame);
+      }
+
+      async captureAndProcessFrame() {
+        if (this.processing) return;
+        this.processing = true;
+
+        try {
+          // Draw video frame onto the processing canvas at a reduced resolution
+          this.processingContext.drawImage(
+            this.video,
+            0,
+            0,
+            this.processingCanvas.width,
+            this.processingCanvas.height
+          );
+
+          // Get image data from the processing canvas
+          let imageData = this.processingContext.getImageData(
+            0,
+            0,
+            this.processingCanvas.width,
+            this.processingCanvas.height
+          );
+
+          // Update frameData with the new image
+          this.frameData.update(imageData);
+
+          // Detect features and match
+          await this.detectFeaturesAndMatch(this.frameData);
+
+          // Calculate transformations and apply overlay
+          await this.calculateTransformationAndOverlay(this.frameData);
+        } catch (err) {
+          console.error("captureAndProcessFrame error:", err);
+        } finally {
+          this.processing = false;
+        }
+      }
+
+      async detectFeaturesAndMatch(frameData) {
+        if (!this.isOpenCVInitialized) {
+          console.error("OpenCV not initialized");
+          return;
+        }
+        try {
+          for (let layer in frameData.layerMats) {
+            this.featureDetector.detectAndCompute(
+              frameData.layerMats[layer],
+              new cv.Mat(),
+              frameData.layerKeypoints[layer],
+              frameData.layerDescriptors[layer]
+            );
+            if (
+              !this.referenceDescriptors[layer].empty() &&
+              !frameData.layerDescriptors[layer].empty()
+            ) {
+              let matches = new cv.DMatchVectorVector();
+              this.matcher.knnMatch(
+                frameData.layerDescriptors[layer],
+                this.referenceDescriptors[layer],
+                matches,
+                2
+              );
+              let goodMatches = this.filterMatches(matches);
+              frameData.layerGoodMatches[layer] = goodMatches;
+              matches.delete();
+
+              console.log(
+                `Layer ${layer}: ${goodMatches.size()} good matches found.`
+              );
+            } else {
+              console.log(
+                `Layer ${layer}: Descriptors are empty, skipping matching.`
+              );
+            }
+          }
+        } catch (err) {
+          console.error("detectFeaturesAndMatch error:", err);
+        }
+      }
+
+      filterMatches(matches, distanceThreshold = 0.7) {
+        let goodMatches = new cv.DMatchVector();
+        for (let i = 0; i < matches.size(); ++i) {
+          let match = matches.get(i);
+          if (match.size() < 2) continue;
+          let dMatch1 = match.get(0);
+          let dMatch2 = match.get(1);
+          if (dMatch1.distance <= dMatch2.distance * distanceThreshold) {
+            goodMatches.push_back(dMatch1);
+          }
+        }
+        return goodMatches;
+      }
+
+      async calculateTransformationAndOverlay(frameData) {
+        try {
+          let homographies = [];
+
+          for (let layer in frameData.layerGoodMatches) {
+            let goodMatches = frameData.layerGoodMatches[layer];
+            if (goodMatches.size() < 5) {
+              console.log(`Layer ${layer}: Not enough matches.`);
+              continue;
+            }
+
+            let points1 = [];
+            let points2 = [];
+
+            for (let i = 0; i < goodMatches.size(); i++) {
+              let match = goodMatches.get(i);
+              points2.push(frameData.layerKeypoints[layer].get(match.queryIdx).pt.x);
+              points2.push(frameData.layerKeypoints[layer].get(match.queryIdx).pt.y);
+              points1.push(this.referenceKeypoints[layer].get(match.trainIdx).pt.x);
+              points1.push(this.referenceKeypoints[layer].get(match.trainIdx).pt.y);
+            }
+
+            let mat1 = new cv.Mat(points1.length / 2, 1, cv.CV_32FC2);
+            mat1.data32F.set(points1);
+            let mat2 = new cv.Mat(points2.length / 2, 1, cv.CV_32FC2);
+            mat2.data32F.set(points2);
+
+            let h = cv.findHomography(mat1, mat2, cv.RANSAC);
+
+            if (!h.empty()) {
+              homographies.push(h.clone());
+              frameData.layerHomographies[layer] = h.clone();
+            } else {
+              console.log(`Layer ${layer}: Homography is empty.`);
+            }
+
+            mat1.delete();
+            mat2.delete();
+            h.delete();
+          }
+
+          if (homographies.length > 0) {
+            let averageHomography = this.calculateAverageHomography(homographies);
+            if (averageHomography) {
+              this.applyOverlay(averageHomography, frameData);
+              averageHomography.delete();
+            } else {
+              console.log("Average homography could not be calculated.");
+            }
+          } else {
+            console.log("No valid homographies were calculated.");
+          }
+
+          // Clean up homographies
+          homographies.forEach(h => h.delete());
+        } catch (err) {
+          console.error("calculateTransformationAndOverlay error:", err);
+        }
+      }
+
+      calculateAverageHomography(homographies) {
+        try {
+          // Convert homographies to an array of numbers
+          let homographyData = homographies.map(h => {
+            let data = h.data64F;
+            // Normalize the homography
+            let scale = data[8];
+            return data.map(v => v / scale);
+          });
+
+          // Average each element
+          let numHomographies = homographyData.length;
+          let averagedData = new Array(9).fill(0);
+          for (let i = 0; i < 9; i++) {
+            for (let j = 0; j < numHomographies; j++) {
+              averagedData[i] += homographyData[j][i];
+            }
+            averagedData[i] /= numHomographies;
+          }
+
+          // Normalize the averaged homography
+          let scale = averagedData[8];
+          averagedData = averagedData.map(v => v / scale);
+
+          // Create a new Mat for the averaged homography
+          let averageHomography = cv.matFromArray(3, 3, cv.CV_64F, averagedData);
+
+          return averageHomography;
+        } catch (err) {
+          console.error("calculateAverageHomography error:", err);
+          return null;
+        }
+      }
+
+      applyOverlay(homography, frameData) {
+        try {
+          if (homography.empty()) return;
+
+          let currentOverlayMat = this.overlayPNGs[this.currentFrameIndex];
+
+          let transformedOverlay = new cv.Mat();
+          cv.warpPerspective(
+            currentOverlayMat,
+            transformedOverlay,
+            homography,
+            new cv.Size(
+              this.processingCanvas.width,
+              this.processingCanvas.height
+            )
+          );
+
+          cv.imshow(this.transformedCanvas, transformedOverlay);
+
+          // Draw the video frame first on the main canvas
+          this.context.drawImage(
+            this.video,
+            0,
+            0,
+            this.canvas.width,
+            this.canvas.height
+          );
+
+          // Now, draw the transformed overlay with transparency blending on the main canvas
+          this.context.drawImage(
+            this.transformedCanvas,
+            0,
+            0,
+            this.canvas.width,
+            this.canvas.height
+          );
+
+          transformedOverlay.delete();
+          this.currentFrameIndex =
+            (this.currentFrameIndex + 1) % this.overlayPNGs.length;
+        } catch (err) {
+          console.error("applyOverlay error:", err);
+        }
+      }
+    }
+
+    window.onload = () => {
+      try {
+        const referenceSrc = "AR_lethal_weapon_marker.png";
+        const overlayPath = "PNG_animation";
+        const arFeatureMatcher = new ARFeatureMatcher(
+          document.getElementById("outputCanvas"),
+          referenceSrc,
+          overlayPath,
+          true
+        );
+        arFeatureMatcher.initialize();
+      } catch (err) {
+        console.error("window.onload error: ", err);
+      }
+    };
+
+    window.addEventListener("beforeunload", () => {
+      cv.destroyAllWindows();
+    });
+  </script>
+</body>
+</html>
