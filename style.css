@@ -1,0 +1,171 @@
+@font-face {
+  font-family: 'Alien League';
+  src: url('fonts/alienleague.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Alien League';
+  src: url('fonts/alienleagueital.ttf') format('truetype');
+  font-weight: normal;
+  font-style: italic;
+}
+
+@font-face {
+  font-family: 'Alien League';
+  src: url('fonts/alienleaguebold.ttf') format('truetype');
+  font-weight: bold;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: Alien League;
+  src: url('fonts/alienleaguebolditalic.ttf') format('truetype');
+  font-weight: bold;
+  font-style: italic;
+}
+/* Reset and Box-Sizing */
+* {
+margin: 0;
+padding: 0;
+box-sizing: border-box;
+}
+
+/* Body Styling */
+body {
+font-family: 'Alien League';
+}
+
+/* Header Styling */
+header {
+background-color: #fff;
+padding: 10px 20px;
+position: relative;
+}
+
+.header-container {
+position: relative;
+height: 50px;
+}
+
+.logo {
+position: absolute;
+width: 30px;
+left: 0;
+top: 50%;
+transform: translateY(-50%);
+max-height: 50px;
+}
+
+.title {
+position: absolute;
+left: 50%;
+top: 50%;
+transform: translate(-50%, -50%);
+font-size: 24px;
+text-align: center;
+}
+
+.about {
+position: absolute;
+right: 0;
+top: 50%;
+transform: translateY(-50%);
+text-decoration: none;
+color: #000;
+font-size: 16px;
+}
+
+/* Canvas Styling */
+canvas {
+width: 100%;
+display: block;
+background-color: black;
+}
+
+/* Footer Styling */
+footer {
+background-color: #fff;
+padding: 20px;
+display: flex;
+flex-wrap: wrap;
+justify-content: center;
+
+}
+
+/* Footer Box Styling */
+.footer-box {
+margin-left: 50px;
+text-align: center;
+padding: 10px;
+}
+
+
+/* Social Media Wrapper */
+.social-media-wrapper {
+margin: 0 auto;
+max-width: 300px;
+margin-top: 20px;
+}
+
+.social-media {
+list-style: none;
+}
+
+.social-media li {
+display: flex;
+align-items: center;
+margin-bottom: 15px;
+}
+
+.social-icon {
+width: 20px;
+height: 20px;
+margin-right: 10px;
+display: inline-block;
+}
+
+.social-media a {
+text-decoration: none;
+color: #000;
+font-size: 16px;
+font-family: inherit;
+}
+
+.social-media a:hover {
+cursor: pointer;
+}
+
+/* Artist Info Styling */
+.artist-info {
+display: flex;
+align-items: center;
+justify-content: center;
+width: max-content;
+}
+
+.artist-image {
+max-width: 100%;
+height: auto;
+border-radius: 50%;
+margin-right: 20px;
+}
+
+.artist-text-container {
+text-align: left;
+}
+
+.artist-name {
+font-weight: bold;
+font-size: 18px;
+margin-bottom: 5px;
+}
+
+.artist-description {
+width: 200px;
+word-wrap: break-word;
+font-size: 14px;
+color: #666;
+}
+

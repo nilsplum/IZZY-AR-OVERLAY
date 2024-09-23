@@ -1,32 +1,81 @@
 # Enable GZIP Compression for text, HTML, CSS, and JavaScript files
+
 <IfModule mod_deflate.c>
     AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css application/javascript application/json
 </IfModule>
 
-# Set cache-control headers to cache static assets like images, video, JS, and CSS files
+# Set cache-control headers based on file types
+
 <IfModule mod_expires.c>
     ExpiresActive On
-    ExpiresByType image/png "access plus 1 year"
-    ExpiresByType image/jpeg "access plus 1 year"
-    ExpiresByType image/gif "access plus 1 year"
-    ExpiresByType image/svg+xml "access plus 1 year"
-    ExpiresByType image/webp "access plus 1 year"
-    ExpiresByType video/webm "access plus 1 year"
-    ExpiresByType application/javascript "access plus 1 month"
-    ExpiresByType text/css "access plus 1 month"
+
+    # Cache OpenCV.js for 1 year (365 days)
+    <FilesMatch "opencv.js$">
+        ExpiresByType application/javascript "access plus 1 year"
+        Header set Cache-Control "public, max-age=31536000"
+    </FilesMatch>
+
+    # Cache images (PNG, JPEG, GIF, SVG, WebP), WebM videos for 2 days
+    ExpiresByType image/png "access plus 2 days"
+    ExpiresByType image/jpeg "access plus 2 days"
+    ExpiresByType image/gif "access plus 2 days"
+    ExpiresByType image/svg+xml "access plus 2 days"
+    ExpiresByType image/webp "access plus 2 days"
+    ExpiresByType video/webm "access plus 2 days"
+
+    # Cache XML and vector images for 2 days
+    ExpiresByType application/xml "access plus 2 days"
+    ExpiresByType image/svg+xml "access plus 2 days"
+
+</IfModule>
+
+# Disable caching for HTML, JavaScript (except OpenCV.js), and CSS files
+
+<IfModule mod_headers.c>
+    # Disable caching for HTML files
+    <FilesMatch "\.(html)$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+        Header set Pragma "no-cache"
+        Header set Expires "0"
+    </FilesMatch>
+
+    # Disable caching for JavaScript files except for OpenCV.js
+    <FilesMatch "\.(js)$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+        Header set Pragma "no-cache"
+        Header set Expires "0"
+    </FilesMatch>
+
+    # Special rule to enable caching for OpenCV.js (this overrides the general .js rule)
+    <FilesMatch "opencv.js$">
+        Header set Cache-Control "public, max-age=31536000"
+        Header unset Pragma
+        Header unset Expires
+    </FilesMatch>
+
+    # Disable caching for CSS files
+    <FilesMatch "\.(css)$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+        Header set Pragma "no-cache"
+        Header set Expires "0"
+    </FilesMatch>
+
 </IfModule>
 
 # Serve WebM videos with the correct MIME type
+
 AddType video/webm .webm
 
 # Enable Cross-Origin Resource Sharing (CORS) for assets (if needed for external access)
+
 <IfModule mod_headers.c>
     Header set Access-Control-Allow-Origin "*"
     Header set Access-Control-Allow-Methods "GET, OPTIONS"
 </IfModule>
 
 # Prevent access to .htaccess file
+
 <Files .htaccess>
-    Order allow,deny
-    Deny from all
+Order allow,deny
+Deny from all
 </Files>
