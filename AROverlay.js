@@ -39,14 +39,12 @@ class FrameData {
 
 class ARFeatureMatcher {
   constructor(canvas, referenceImageUrl, overlayImagePath) {
-
-
-    //The higher, the more features are detected which leads to more matches but also more false positives
+    // The higher, the more features are detected which leads to more matches but also more false positives
     this.featureDetectionSensitivity = 0.0005;
     // The larger, the more accurate the matches but also the more time needs the method "this.featureDetector.detectAndCompute()" which is the most time consuming method
-    this.processingCanvasFixedWidth = 500;
+    this.initialProcessingCanvasWidth = 100;
 
-    //PERFORMANCE AND QUALITY SETTINGS
+    // PERFORMANCE AND QUALITY SETTINGS
     // Configurable canvas size for processing
     // Indirectly how many features are detected
     // Features are possible matches
@@ -55,13 +53,7 @@ class ARFeatureMatcher {
 
     // For blocking the overlay when quality is poor
     this.matchQualityIndicatorValue = 0.6; // Threshold for quality indicator
-    this.displayingThresholdQuality = 0.002; // Minimum quality indicator for displaying overlay
-
-    //Best for far away: MarkerSmall.jpg
-
-    //JPG Markers work better than PNG -> Because of the blur?
-
-
+    this.displayingThresholdQuality = 0.02; // Minimum quality indicator for displaying overlay
 
     // Canvas to finally display the video feed and overlay
     this.displayingCanvas = canvas;
@@ -84,22 +76,29 @@ class ARFeatureMatcher {
     this.referenceImageUrl = referenceImageUrl;
     this.overlayImagePath = overlayImagePath;
 
-    //PNG Set animation images and current frame index
+    // PNG Set animation images and current frame index
     this.overlayPNGs = [];
     this.currentFrameIndex = 0;
 
-    // Initialisation
+    // Initialization
     this.isOpenCVInitialized = false;
     this.processing = false;
 
-    //Current frame data
+    // Current frame data
     this.frameData = null;
 
-    // Off-screen canvas for lower resolution processing
-    this.processingCanvas = document.createElement("canvas");
-    this.processingContext = this.processingCanvas.getContext("2d", {
-      willReadFrequently: true,
-    });
+    // Frame rate and processing canvas size adjustment variables
+    this.targetFrameRate = 10; // Target frame rate in fps
+    this.minFrameRate = 7; // Minimum frame rate
+    this.maxFrameRate = 30; // Maximum frame rate -> Keep animation in right frame rate
+
+    this.minProcessingCanvasWidth = 250; // Minimum processing canvas width
+    this.processingCanvasWidthStep = 20; // Amount to increase/decrease width per adjustment
+
+    this.lastFrameTime = Date.now(); // Initialize last frame time
+
+    this.currentProcessingCanvasWidth = this.initialProcessingCanvasWidth; // Initial processing canvas width
+    this.aspectRatio = null; // Will be set after video metadata is loaded
   }
 
   async initialize() {
@@ -156,50 +155,126 @@ class ARFeatureMatcher {
   // Initialize the camera stream and adjust canvas dimensions based on the video feed
   async initializeCamera() {
     try {
+      // Check if navigator.mediaDevices and getUserMedia are supported
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        this.displayErrorMessage(
+          "Camera API is not supported on this device or browser."
+        );
+        return;
+      }
+
+      // Check the permission status for the camera
+      const permissionStatus = await navigator.permissions.query({
+        name: "camera",
+      });
+      if (permissionStatus.state === "denied") {
+        this.displayErrorMessage(
+          "Camera access has been denied. Please enable it in your browser settings."
+        );
+        return;
+      }
+
+      // Try to access the environment-facing camera first
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
+        video: { facingMode: { ideal: "environment" } }, // Attempt to use back camera
       });
 
+      // Initialize the video element
       this.video = document.createElement("video");
       this.video.setAttribute("playsinline", "true");
       this.video.muted = true;
-      this.video.style.display = "none"; // Hide video element
+      this.video.style.display = "none"; // Hide the video element from view
       document.body.appendChild(this.video);
 
+      // Set the video stream as the source for the video element
       this.video.srcObject = stream;
 
+      // Wait for the video metadata to load (dimensions, etc.)
       this.video.onloadedmetadata = () => {
-        const aspectRatio =
-          this.video.videoWidth / this.video.videoHeight;
+        const aspectRatio = this.video.videoWidth / this.video.videoHeight;
         const desiredWidth = window.innerWidth;
 
-        // Adjust main visible canvas size
+        this.aspectRatio = aspectRatio; // Store aspect ratio for later use
+
+        // Adjust the size of the visible canvas based on the video feed dimensions
         this.displayingCanvas.width = desiredWidth;
         this.displayingCanvas.height = desiredWidth / aspectRatio;
 
-        // Adjust processing canvas size for performance
-        this.adjustProcessingCanvas(aspectRatio);
+        // Adjust processing canvas size for performance optimization
+        this.adjustProcessingCanvas();
         this.frameData = new FrameData(
           this.processingCanvas.width,
           this.processingCanvas.height
         );
 
-        // Set transformedCanvas size for final overlay rendering
+        // Set transformedCanvas size for the final overlay rendering
         this.transformedCanvas.width = this.displayingCanvas.width;
         this.transformedCanvas.height = this.displayingCanvas.height;
       };
 
+      // Start video playback
       await this.video.play();
     } catch (err) {
       console.error("Camera initialization error: ", err);
+      // Handle specific types of errors and display appropriate messages
+      if (err.name === "NotAllowedError") {
+        this.displayErrorMessage(
+          "Camera access denied. Please allow camera access in the website settings within your browser and in the system settings for your browser app."
+        );
+      } else if (
+        err.name === "NotFoundError" ||
+        err.name === "DevicesNotFoundError"
+      ) {
+        this.displayErrorMessage("No camera was found on this device.");
+      } else if (
+        err.name === "NotReadableError" ||
+        err.name === "TrackStartError"
+      ) {
+        this.displayErrorMessage(
+          "Unable to access the camera. The camera may be in use by another application."
+        );
+      } else if (
+        err.name === "OverconstrainedError" ||
+        err.name === "ConstraintNotSatisfiedError"
+      ) {
+        this.displayErrorMessage(
+          "No camera matches the specified constraints. Trying the default camera."
+        );
+
+        // Fallback to default camera (front camera or system default)
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+          });
+          this.video.srcObject = fallbackStream;
+          await this.video.play();
+        } catch (fallbackErr) {
+          this.displayErrorMessage("Fallback camera access failed.");
+          console.error("Fallback camera initialization error: ", fallbackErr);
+        }
+      } else if (err.name === "SecurityError") {
+        this.displayErrorMessage(
+          "Camera access is blocked due to security settings."
+        );
+      } else {
+        // Generic error message for any other errors
+        this.displayErrorMessage(
+          "An unknown error occurred while initializing the camera:" + err.message
+        );
+      }
     }
   }
 
   // Adjust processing canvas size based on aspect ratio
-  adjustProcessingCanvas(aspectRatio) {
-    this.processingCanvas.width = this.processingCanvasFixedWidth;
+  adjustProcessingCanvas() {
+    this.processingCanvas.width = this.currentProcessingCanvasWidth;
     this.processingCanvas.height =
-      this.processingCanvas.width / aspectRatio;
+      this.processingCanvas.width / this.aspectRatio;
+
+    // Reassign processingContext after resizing canvas
+    this.processingContext = this.processingCanvas.getContext("2d", {
+      willReadFrequently: true,
+    });
   }
 
   // Load the reference image for feature matching
@@ -238,11 +313,10 @@ class ARFeatureMatcher {
     document.body.appendChild(iframe);
 
     while (true) {
-      const cacheBuster = `?cb=${new Date().getTime()}`;
       const imageUrl = `${this.overlayImagePath}/PNG_${String(i).padStart(
         4,
         "0"
-      )}.png${cacheBuster}`;
+      )}.png`;
 
       // Use iframe to check if the image exists
       const imageExists = await new Promise((resolve) => {
@@ -308,6 +382,47 @@ class ARFeatureMatcher {
     if (this.processing) return;
     this.processing = true;
 
+    // Calculate current frame rate
+    let now = Date.now();
+    let elapsedTime = now - this.lastFrameTime; // in ms
+    let currentFrameRate = 1000 / elapsedTime; // frames per second
+    // log the current frame rate in the div
+
+    this.lastFrameTime = now; // Update last frame time
+
+    // Adjust processing canvas width based on frame rate
+    let canvasSizeChanged = false;
+    let newWidth = this.currentProcessingCanvasWidth;
+
+    if (
+      currentFrameRate < this.targetFrameRate ) {
+      newWidth = Math.max(
+        this.currentProcessingCanvasWidth - this.processingCanvasWidthStep,
+        this.minProcessingCanvasWidth
+      );
+    } else if (
+      currentFrameRate > this.targetFrameRate) {
+      newWidth = this.currentProcessingCanvasWidth + this.processingCanvasWidthStep;
+    }
+    //document.getElementById("log").innerText = `Width: ${newWidth}, Frame Rate: ${currentFrameRate.toFixed(2)} fps`;
+
+
+
+      this.currentProcessingCanvasWidth = newWidth;
+      this.adjustProcessingCanvas();
+      canvasSizeChanged = true;
+
+      // Delete old frameData Mats
+      if (this.frameData) {
+        this.frameData.delete();
+      }
+      // Create new frameData with new sizes
+      this.frameData = new FrameData(
+        this.processingCanvas.width,
+        this.processingCanvas.height
+      );
+  
+
     // Draw the current video frame on the processing canvas
     this.processingContext.drawImage(
       this.video,
@@ -346,7 +461,6 @@ class ARFeatureMatcher {
   }
 
   // Detect features in the frame and match them with the reference image
-  // Detect features in the frame and match them with the reference image
   async detectFeaturesAndMatch(frameData) {
     if (!this.isOpenCVInitialized) return;
 
@@ -374,14 +488,12 @@ class ARFeatureMatcher {
         frameData.setQualityIndicator(qualityIndicator);
         // Store good matches in the frameData
         frameData.goodMatches = goodMatches;
-
-        // Log the number of good matches
-        //console.log(`Number of good matches: ${goodMatches.size()}`);
       }
     } catch (err) {
       console.error("Feature matching error: ", err);
     }
   }
+
   // Filter matches using cross-checking with a distance threshold
   filterMatchesWithCrossCheck(
     srcDescriptors,
@@ -438,18 +550,7 @@ class ARFeatureMatcher {
       }
     }
 
-    // Log details about the filtering process
-    /*
-    console.log(
-      `Total source-to-target matches: ${sourceToTargetMatches.size()}`
-    );
-    console.log(
-      `Good matches after cross-checking: ${goodMatches.size()}`
-    );
-    */
-
-    let qualityIndicator =
-      perfectMatchCount / sourceToTargetMatches.size();
+    let qualityIndicator = perfectMatchCount / sourceToTargetMatches.size();
     return {
       goodMatches: goodMatches,
       qualityIndicator: qualityIndicator,
@@ -465,7 +566,6 @@ class ARFeatureMatcher {
       this.displayErrorMessage("GET CLOSER TO SEE THE MAGIC");
       return;
     }
-    //alert(frameData.qualityIndicator);
 
     let points1 = [];
     let points2 = [];
@@ -502,44 +602,6 @@ class ARFeatureMatcher {
     mat1.delete();
     mat2.delete();
     h.delete();
-  }
-
-  // Compute the aspect ratio of a transformed quadrilateral
-  computeAspectRatio(corners) {
-    let width = Math.sqrt(
-      Math.pow(corners.data32F[2] - corners.data32F[0], 2) +
-        Math.pow(corners.data32F[3] - corners.data32F[1], 2)
-    );
-    let height = Math.sqrt(
-      Math.pow(corners.data32F[6] - corners.data32F[0], 2) +
-        Math.pow(corners.data32F[7] - corners.data32F[1], 2)
-    );
-    return width / height;
-  }
-
-  // Compute the area of a transformed quadrilateral
-  computeQuadrilateralArea(corners) {
-    let pts = [];
-    for (let i = 0; i < 4; i++) {
-      pts.push({
-        x: corners.data32F[i * 2],
-        y: corners.data32F[i * 2 + 1],
-      });
-    }
-    // Shoelace formula for computing polygon area
-    let area =
-      0.5 *
-      Math.abs(
-        pts[0].x * pts[1].y +
-          pts[1].x * pts[2].y +
-          pts[2].x * pts[3].y +
-          pts[3].x * pts[0].y -
-          pts[1].x * pts[0].y -
-          pts[2].x * pts[1].y -
-          pts[3].x * pts[2].y -
-          pts[0].x * pts[3].y
-      );
-    return area;
   }
 
   // Apply the overlay image to the main canvas

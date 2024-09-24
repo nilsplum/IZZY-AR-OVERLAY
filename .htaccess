@@ -1,11 +1,9 @@
 # Enable GZIP Compression for text, HTML, CSS, and JavaScript files
-
 <IfModule mod_deflate.c>
     AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css application/javascript application/json
 </IfModule>
 
 # Set cache-control headers based on file types
-
 <IfModule mod_expires.c>
     ExpiresActive On
 
@@ -26,11 +24,9 @@
     # Cache XML and vector images for 2 days
     ExpiresByType application/xml "access plus 2 days"
     ExpiresByType image/svg+xml "access plus 2 days"
-
 </IfModule>
 
 # Disable caching for HTML, JavaScript (except OpenCV.js), and CSS files
-
 <IfModule mod_headers.c>
     # Disable caching for HTML files
     <FilesMatch "\.(html)$">
@@ -59,23 +55,19 @@
         Header set Pragma "no-cache"
         Header set Expires "0"
     </FilesMatch>
-
 </IfModule>
 
 # Serve WebM videos with the correct MIME type
-
 AddType video/webm .webm
 
 # Enable Cross-Origin Resource Sharing (CORS) for assets (if needed for external access)
-
 <IfModule mod_headers.c>
     Header set Access-Control-Allow-Origin "*"
     Header set Access-Control-Allow-Methods "GET, OPTIONS"
 </IfModule>
 
 # Prevent access to .htaccess file
-
 <Files .htaccess>
-Order allow,deny
-Deny from all
+    Order allow,deny
+    Deny from all
 </Files>
