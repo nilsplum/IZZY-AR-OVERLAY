@@ -485,37 +485,31 @@ class ARFeatureMatcher {
   captureAndProcessFrame() {
     if (this.processing) return;
     this.processing = true;
-
+  
     // Calculate current frame rate
     let now = Date.now();
     let elapsedTime = now - this.lastFrameTime; // in ms
     let currentFrameRate = 1000 / elapsedTime; // frames per second
-    // log the current frame rate in the div
-
     this.lastFrameTime = now; // Update last frame time
-
+  
     // Adjust processing canvas width based on frame rate
     let canvasSizeChanged = false;
     let newWidth = this.currentProcessingCanvasWidth;
-
-    if (
-      currentFrameRate < this.targetFrameRate ) {
+  
+    if (currentFrameRate < this.targetFrameRate) {
       newWidth = Math.max(
         this.currentProcessingCanvasWidth - this.processingCanvasWidthStep,
         this.minProcessingCanvasWidth
       );
-    } else if (
-      currentFrameRate > this.targetFrameRate) {
+    } else if (currentFrameRate > this.targetFrameRate) {
       newWidth = this.currentProcessingCanvasWidth + this.processingCanvasWidthStep;
     }
-    //document.getElementById("log").innerText = `Width: ${newWidth}, Frame Rate: ${currentFrameRate.toFixed(2)} fps`;
-
-
-
+  
+    if (newWidth !== this.currentProcessingCanvasWidth) {
       this.currentProcessingCanvasWidth = newWidth;
       this.adjustProcessingCanvas();
       canvasSizeChanged = true;
-
+  
       // Delete old frameData Mats
       if (this.frameData) {
         this.frameData.delete();
@@ -525,8 +519,8 @@ class ARFeatureMatcher {
         this.processingCanvas.width,
         this.processingCanvas.height
       );
+    }
   
-
     // Draw the current video frame on the processing canvas
     this.processingContext.drawImage(
       this.video,
@@ -535,7 +529,7 @@ class ARFeatureMatcher {
       this.processingCanvas.width,
       this.processingCanvas.height
     );
-
+  
     // Extract image data from the processing canvas
     let imageData = this.processingContext.getImageData(
       0,
@@ -543,14 +537,14 @@ class ARFeatureMatcher {
       this.processingCanvas.width,
       this.processingCanvas.height
     );
-
+  
     // Update frame data with the new image
     this.frameData.update(imageData);
-
+  
     // Detect and match features
     this.detectFeaturesAndMatch(this.frameData);
-
-    // Always display the video feed on the main canvas
+  
+    // Now, draw the video frame on the displaying canvas
     this.displayingContext.drawImage(
       this.video,
       0,
@@ -558,9 +552,10 @@ class ARFeatureMatcher {
       this.displayingCanvas.width,
       this.displayingCanvas.height
     );
-
+  
+    // Apply the overlay (if any)
     this.calculateTransformationAndOverlay(this.frameData);
-
+  
     this.processing = false;
   }
 
