@@ -52,8 +52,27 @@ class ARFeatureMatcher {
     // Initialize essential properties
 
     // For blocking the overlay when quality is poor
-    this.matchQualityIndicatorValue = 0.6; // Threshold for quality indicator
-    this.displayingThresholdQuality = 0.02; // Minimum quality indicator for displaying overlay
+    this.displayingThresholdQuality = 0.06; // Minimum quality indicator for displaying overlay
+
+
+     // Range over which the opacity fades from fully opaque to fully transparent
+    this.qualityIndicatorFadeRange = 0.015; // Adjust as needed
+     // Calculate the maximum quality indicator value where opacity becomes zero
+    this.qualityIndicatorMax = this.displayingThresholdQuality + this.qualityIndicatorFadeRange;
+ 
+
+    // Frame rate and processing canvas size adjustment variables
+    this.targetFrameRate = 10; // Target frame rate in fps
+    this.minFrameRate = 7; // Minimum frame rate
+
+    this.minProcessingCanvasWidth = 250; // Minimum processing canvas width
+    this.processingCanvasWidthStep = 20; // Amount to increase/decrease width per adjustment
+
+    this.nFramesForAveraging = 6; // This can be adjusted as needed
+    this.qualityHistory = []; // To store recent quality indicators
+    this.averageQualityIndicator = 0; // The rolling average of quality indicators
+
+    this.desiredZoomFactor = 2; // Desired zoom factor for the camera
 
     // Canvas to finally display the video feed and overlay
     this.displayingCanvas = canvas;
@@ -86,14 +105,6 @@ class ARFeatureMatcher {
 
     // Current frame data
     this.frameData = null;
-
-    // Frame rate and processing canvas size adjustment variables
-    this.targetFrameRate = 10; // Target frame rate in fps
-    this.minFrameRate = 7; // Minimum frame rate
-    this.maxFrameRate = 30; // Maximum frame rate -> Keep animation in right frame rate
-
-    this.minProcessingCanvasWidth = 250; // Minimum processing canvas width
-    this.processingCanvasWidthStep = 20; // Amount to increase/decrease width per adjustment
 
     this.lastFrameTime = Date.now(); // Initialize last frame time
 
@@ -153,17 +164,42 @@ class ARFeatureMatcher {
   }
 
   // Initialize the camera stream and adjust canvas dimensions based on the video feed
+  // Initialize the camera stream and adjust canvas dimensions based on the video feed
   async initializeCamera() {
     try {
-      // Check if navigator.mediaDevices and getUserMedia are supported
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        this.displayErrorMessage(
-          "Camera API is not supported on this device or browser."
-        );
-        return;
-      }
+      // Check if camera APIs are supported
+      await this.checkCameraSupport();
 
-      // Check the permission status for the camera
+      // Get the camera stream
+      const stream = await this.getCameraStream();
+
+      // Set up the video element with the obtained stream
+      this.setupVideoElement(stream);
+
+      // Apply zoom if supported
+      await this.applyZoomIfSupported(stream);
+
+      // Start video playback
+      await this.startVideoPlayback();
+    } catch (err) {
+      console.error("Camera initialization error: ", err);
+
+      // Handle errors and execute default behavior
+      await this.handleCameraError(err);
+    }
+  }
+
+  // Check if navigator.mediaDevices and getUserMedia are supported
+  async checkCameraSupport() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      this.displayErrorMessage(
+        "Camera API is not supported on this device or browser."
+      );
+      throw new Error("Camera API not supported");
+    }
+
+    // Check the permission status for the camera
+    try {
       const permissionStatus = await navigator.permissions.query({
         name: "camera",
       });
@@ -171,97 +207,165 @@ class ARFeatureMatcher {
         this.displayErrorMessage(
           "Camera access has been denied. Please enable it in your browser settings."
         );
-        return;
+        throw new Error("Camera access denied");
       }
+    } catch (err) {
+      // Some browsers may not support navigator.permissions
+      console.warn("Permissions API not supported, proceeding without checking permissions.");
+    }
+  }
 
-      // Try to access the environment-facing camera first
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" } }, // Attempt to use back camera
-      });
-
-      // Initialize the video element
-      this.video = document.createElement("video");
-      this.video.setAttribute("playsinline", "true");
-      this.video.muted = true;
-      this.video.style.display = "none"; // Hide the video element from view
-      document.body.appendChild(this.video);
-
-      // Set the video stream as the source for the video element
-      this.video.srcObject = stream;
-
-      // Wait for the video metadata to load (dimensions, etc.)
-      this.video.onloadedmetadata = () => {
-        const aspectRatio = this.video.videoWidth / this.video.videoHeight;
-        const desiredWidth = window.innerWidth;
-
-        this.aspectRatio = aspectRatio; // Store aspect ratio for later use
-
-        // Adjust the size of the visible canvas based on the video feed dimensions
-        this.displayingCanvas.width = desiredWidth;
-        this.displayingCanvas.height = desiredWidth / aspectRatio;
-
-        // Adjust processing canvas size for performance optimization
-        this.adjustProcessingCanvas();
-        this.frameData = new FrameData(
-          this.processingCanvas.width,
-          this.processingCanvas.height
-        );
-
-        // Set transformedCanvas size for the final overlay rendering
-        this.transformedCanvas.width = this.displayingCanvas.width;
-        this.transformedCanvas.height = this.displayingCanvas.height;
+  // Get the camera stream with desired constraints
+  async getCameraStream() {
+    try {
+      const constraints = {
+        video: {
+          facingMode: { ideal: "environment" }, // Attempt to use back camera
+          // You can add more constraints here if needed
+        },
       };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      return stream;
+    } catch (err) {
+      // Rethrow the error to be handled in initializeCamera
+      throw err;
+    }
+  }
 
-      // Start video playback
+  // Set up the video element with the obtained stream
+  setupVideoElement(stream) {
+    // Create video element
+    this.video = document.createElement("video");
+    this.video.setAttribute("playsinline", "true");
+    this.video.muted = true;
+    this.video.style.display = "none"; // Hide the video element from view
+    document.body.appendChild(this.video);
+
+    // Set the video stream as the source for the video element
+    this.video.srcObject = stream;
+
+    // Wait for the video metadata to load (dimensions, etc.)
+    this.video.onloadedmetadata = () => {
+      this.adjustCanvasSizes();
+    };
+  }
+
+  // Adjust canvas sizes based on video dimensions
+  adjustCanvasSizes() {
+    const aspectRatio = this.video.videoWidth / this.video.videoHeight;
+    const desiredWidth = window.innerWidth;
+
+    this.aspectRatio = aspectRatio; // Store aspect ratio for later use
+
+    // Adjust the size of the visible canvas based on the video feed dimensions
+    this.displayingCanvas.width = desiredWidth;
+    this.displayingCanvas.height = desiredWidth / aspectRatio;
+
+    // Adjust processing canvas size for performance optimization
+    this.adjustProcessingCanvas();
+    this.frameData = new FrameData(
+      this.processingCanvas.width,
+      this.processingCanvas.height
+    );
+
+    // Set transformedCanvas size for the final overlay rendering
+    this.transformedCanvas.width = this.displayingCanvas.width;
+    this.transformedCanvas.height = this.displayingCanvas.height;
+  }
+
+  // Apply zoom to the video track if supported
+  async applyZoomIfSupported(stream) {
+    const [videoTrack] = stream.getVideoTracks();
+
+    if (!videoTrack) {
+      console.warn("No video track available");
+      return;
+    }
+
+    const capabilities = videoTrack.getCapabilities();
+
+    if ('zoom' in capabilities) {
+      const minZoom = capabilities.zoom.min;
+      const maxZoom = capabilities.zoom.max;
+      const stepZoom = capabilities.zoom.step || 0.1;
+
+      // Ensure desired zoom is within the allowed range
+      let desiredZoom = this.desiredZoomFactor;
+      if (desiredZoom < minZoom) desiredZoom = minZoom;
+      if (desiredZoom > maxZoom) desiredZoom = maxZoom;
+
+      try {
+        await videoTrack.applyConstraints({
+          advanced: [{ zoom: desiredZoom }],
+        });
+        console.log(`Applied zoom: ${desiredZoom}`);
+      } catch (err) {
+        console.warn("Failed to apply zoom constraints:", err);
+        // Proceed with default behavior without zoom
+      }
+    } else {
+      console.log("Zoom is not supported on this device");
+      // Proceed with default behavior without zoom
+    }
+  }
+
+  // Start video playback
+  async startVideoPlayback() {
+    try {
       await this.video.play();
     } catch (err) {
-      console.error("Camera initialization error: ", err);
-      // Handle specific types of errors and display appropriate messages
-      if (err.name === "NotAllowedError") {
-        this.displayErrorMessage(
-          "Camera access denied. Please allow camera access in the website settings within your browser and in the system settings for your browser app."
-        );
-      } else if (
-        err.name === "NotFoundError" ||
-        err.name === "DevicesNotFoundError"
-      ) {
-        this.displayErrorMessage("No camera was found on this device.");
-      } else if (
-        err.name === "NotReadableError" ||
-        err.name === "TrackStartError"
-      ) {
-        this.displayErrorMessage(
-          "Unable to access the camera. The camera may be in use by another application."
-        );
-      } else if (
-        err.name === "OverconstrainedError" ||
-        err.name === "ConstraintNotSatisfiedError"
-      ) {
-        this.displayErrorMessage(
-          "No camera matches the specified constraints. Trying the default camera."
-        );
+      console.error("Error starting video playback:", err);
+      throw err;
+    }
+  }
 
-        // Fallback to default camera (front camera or system default)
-        try {
-          const fallbackStream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-          });
-          this.video.srcObject = fallbackStream;
-          await this.video.play();
-        } catch (fallbackErr) {
-          this.displayErrorMessage("Fallback camera access failed.");
-          console.error("Fallback camera initialization error: ", fallbackErr);
-        }
-      } else if (err.name === "SecurityError") {
-        this.displayErrorMessage(
-          "Camera access is blocked due to security settings."
-        );
-      } else {
-        // Generic error message for any other errors
-        this.displayErrorMessage(
-          "An unknown error occurred while initializing the camera:" + err.message
-        );
+  // Handle errors during camera initialization
+  async handleCameraError(err) {
+    // Handle specific types of errors and display appropriate messages
+    if (err.name === "NotAllowedError") {
+      this.displayErrorMessage(
+        "Camera access denied. Please allow camera access in the website settings within your browser and in the system settings for your browser app."
+      );
+    } else if (
+      err.name === "NotFoundError" ||
+      err.name === "DevicesNotFoundError"
+    ) {
+      this.displayErrorMessage("No camera was found on this device.");
+    } else if (
+      err.name === "NotReadableError" ||
+      err.name === "TrackStartError"
+    ) {
+      this.displayErrorMessage(
+        "Unable to access the camera. The camera may be in use by another application."
+      );
+    } else if (
+      err.name === "OverconstrainedError" ||
+      err.name === "ConstraintNotSatisfiedError"
+    ) {
+      this.displayErrorMessage(
+        "No camera matches the specified constraints. Trying the default camera."
+      );
+
+      // Fallback to default camera (front camera or system default)
+      try {
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+        });
+        this.setupVideoElement(fallbackStream);
+        await this.startVideoPlayback();
+      } catch (fallbackErr) {
+        this.displayErrorMessage("Fallback camera access failed.");
+        console.error("Fallback camera initialization error: ", fallbackErr);
       }
+    } else if (err.name === "SecurityError") {
+      this.displayErrorMessage(
+        "Camera access is blocked due to security settings."
+      );
+    } else {
+      // Generic error message for any other errors
+      this.displayErrorMessage(
+        "An unknown error occurred while initializing the camera: " + err.message
+      );
     }
   }
 
@@ -463,7 +567,7 @@ class ARFeatureMatcher {
   // Detect features in the frame and match them with the reference image
   async detectFeaturesAndMatch(frameData) {
     if (!this.isOpenCVInitialized) return;
-
+  
     try {
       // Detect and compute keypoints and descriptors for the current frame
       this.featureDetector.detectAndCompute(
@@ -472,27 +576,36 @@ class ARFeatureMatcher {
         frameData.keypoints,
         frameData.descriptors
       );
-
-      // Perform feature matching if both reference and frame descriptors are available
-      if (
-        !this.referenceDescriptors.empty() &&
-        !frameData.descriptors.empty()
-      ) {
-        // Match descriptors from current frame (source) with the reference descriptors (target)
-        let { goodMatches, qualityIndicator } =
-          this.filterMatchesWithCrossCheck(
-            frameData.descriptors,
-            this.referenceDescriptors
-          );
-
+  
+      if (!this.referenceDescriptors.empty() && !frameData.descriptors.empty()) {
+        // Match descriptors from current frame with the reference descriptors
+        let { goodMatches, qualityIndicator } = this.filterMatchesWithCrossCheck(
+          frameData.descriptors,
+          this.referenceDescriptors
+        );
+  
         frameData.setQualityIndicator(qualityIndicator);
-        // Store good matches in the frameData
-        frameData.goodMatches = goodMatches;
+        frameData.goodMatches = goodMatches; // Store good matches
+  
+        // Update quality history for averaging
+        this.qualityHistory.push(qualityIndicator);
+  
+        // Keep only the last nFramesForAveraging quality indicators
+        if (this.qualityHistory.length > this.nFramesForAveraging) {
+          this.qualityHistory.shift(); // Remove the oldest quality indicator
+        }
+  
+        // Calculate the rolling average quality indicator
+        const sumQuality = this.qualityHistory.reduce((sum, q) => sum + q, 0);
+        this.averageQualityIndicator = sumQuality / this.qualityHistory.length;
+        // log the average quality indicator in the div
+        document.getElementById("log").innerText = `Quality: ${this.averageQualityIndicator.toFixed(3)}`;
       }
     } catch (err) {
       console.error("Feature matching error: ", err);
     }
   }
+  
 
   // Filter matches using cross-checking with a distance threshold
   filterMatchesWithCrossCheck(
@@ -528,9 +641,10 @@ class ARFeatureMatcher {
       let dMatch2 = match.get(1); // Second-best match
 
       // Check for perfect matches to have a good quality indicator
+      // Is set to 0.6 because the threshold can can be adapted with the variable "displayingThresholdQuality"
       if (
         dMatch1.distance <=
-        dMatch2.distance * this.matchQualityIndicatorValue
+        dMatch2.distance * 0.75
       ) {
         perfectMatchCount++;
       }
@@ -559,18 +673,25 @@ class ARFeatureMatcher {
 
   // Calculate the transformation matrix and apply the overlay if valid
   calculateTransformationAndOverlay(frameData) {
+    // Calculate opacity based on the quality indicator
+    const opacity = this.calculateErrorMessageOpacity();
+
+    // Always display the error message with the calculated opacity
+    this.displayErrorMessage(opacity);
+
+    // Proceed with overlay calculation if quality is good enough
     if (
       frameData.goodMatches.size() < 5 ||
-      frameData.qualityIndicator < this.displayingThresholdQuality
+      this.averageQualityIndicator < this.displayingThresholdQuality
     ) {
-      this.displayErrorMessage("GET CLOSER TO SEE THE MAGIC");
+      // Do not apply the overlay if not enough matches or quality is below threshold
       return;
     }
 
+    // Existing code to calculate homography and apply overlay
     let points1 = [];
     let points2 = [];
 
-    // Extract matching keypoints from both reference and current frame
     for (let i = 0; i < frameData.goodMatches.size(); i++) {
       let match = frameData.goodMatches.get(i);
       points2.push(frameData.keypoints.get(match.queryIdx).pt.x);
@@ -579,38 +700,43 @@ class ARFeatureMatcher {
       points1.push(this.referenceKeypoints.get(match.trainIdx).pt.y);
     }
 
-    // Convert keypoint arrays to Mats
-    let mat1 = cv.matFromArray(
-      points1.length / 2,
-      1,
-      cv.CV_32FC2,
-      points1
-    );
-    let mat2 = cv.matFromArray(
-      points2.length / 2,
-      1,
-      cv.CV_32FC2,
-      points2
-    );
+    let mat1 = cv.matFromArray(points1.length / 2, 1, cv.CV_32FC2, points1);
+    let mat2 = cv.matFromArray(points2.length / 2, 1, cv.CV_32FC2, points2);
 
-    // Find the homography matrix (transformation matrix)
     let h = cv.findHomography(mat1, mat2, cv.RANSAC);
     if (!h.empty()) {
-      // Apply overlay
       this.applyOverlay(h, frameData);
     }
+
     mat1.delete();
     mat2.delete();
     h.delete();
   }
 
+  calculateErrorMessageOpacity() {
+    if (this.averageQualityIndicator <= this.displayingThresholdQuality) {
+      return 1; // Fully opaque
+    } else if (this.averageQualityIndicator >= this.qualityIndicatorMax) {
+      return 0; // Fully transparent
+    } else {
+      // Calculate opacity using linear interpolation
+      let opacity = (this.qualityIndicatorMax - this.averageQualityIndicator) / this.qualityIndicatorFadeRange;
+      // Ensure opacity is between 0 and 1
+      return Math.min(Math.max(opacity, 0), 1);
+    }
+  }
+
   // Apply the overlay image to the main canvas
   applyOverlay(h, frameData) {
     if (h.empty()) return;
-
+  
+    // Calculate the mirrored opacity for the overlay
+    const errorMessageOpacity = this.calculateErrorMessageOpacity();
+    const overlayOpacity = 1 - errorMessageOpacity;
+  
     let currentOverlayMat = this.overlayPNGs[this.currentFrameIndex];
     let transformedOverlay = new cv.Mat();
-
+  
     // Warp the overlay according to the transformation matrix
     cv.warpPerspective(
       currentOverlayMat,
@@ -621,11 +747,12 @@ class ARFeatureMatcher {
         this.processingCanvas.height
       )
     );
-
+  
     // Draw the transformed overlay on the transformedCanvas
     cv.imshow(this.transformedCanvas, transformedOverlay);
-
-    // Blend the transformed overlay with the main canvas
+  
+    // Apply the overlay with the adjusted opacity
+    this.displayingContext.globalAlpha = overlayOpacity; // Set overlay opacity
     this.displayingContext.drawImage(
       this.transformedCanvas,
       0,
@@ -633,16 +760,18 @@ class ARFeatureMatcher {
       this.displayingCanvas.width,
       this.displayingCanvas.height
     );
-
+    this.displayingContext.globalAlpha = 1; // Reset opacity to default
+  
     transformedOverlay.delete();
     this.currentFrameIndex =
       (this.currentFrameIndex + 1) % this.overlayPNGs.length; // Cycle through overlay frames
   }
+  
 
   // Display an error message on the canvas by darkening it and showing the message in white
-  displayErrorMessage(message) {
-    // Darken the entire canvas
-    this.displayingContext.fillStyle = "rgba(0, 0, 0, 0.7)";
+  displayErrorMessage(opacity=1) {
+    // Darken the entire canvas with the calculated opacity
+    this.displayingContext.fillStyle = `rgba(0, 0, 0, ${0.7 * opacity})`;
     this.displayingContext.fillRect(
       0,
       0,
@@ -650,14 +779,14 @@ class ARFeatureMatcher {
       this.displayingCanvas.height
     );
 
-    // Set message styling
+    // Set message styling and opacity
     this.displayingContext.font = "15px Arial";
-    this.displayingContext.fillStyle = "white";
+    this.displayingContext.fillStyle = `rgba(255, 255, 255, ${opacity})`;
     this.displayingContext.textAlign = "center";
 
-    // Display the error message at the center of the canvas
+    // Display the error message at the center of the canvas with adjusted opacity
     this.displayingContext.fillText(
-      message,
+      "GET CLOSER TO SEE THE MAGIC",
       this.displayingCanvas.width / 2,
       this.displayingCanvas.height / 2
     );
